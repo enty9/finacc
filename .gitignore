@@ -6,3 +6,4 @@ src-tauri/gen/
 *.tsbuildinfo
 .env
 .DS_Store
+*.apk
