@@ -1,6 +1,6 @@
 [package]
 name = "finacc"
-version = "0.1.0"
+version = "0.1.1"
 description = "finacc — личные финансы"
 edition = "2021"
 rust-version = "1.90"
@@ -19,3 +19,4 @@ tauri-plugin-http = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+tauri-plugin-opener = "2"

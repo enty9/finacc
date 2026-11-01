@@ -80,6 +80,9 @@ import {
   TransactionList,
 } from "./components";
 import { CashChart, ExpenseChart, Sparkline } from "./charts";
+import { isTauri } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { checkForUpdate, type AppUpdate } from "./updates";
 import {
   BudgetForm,
   EntityForm,
@@ -181,12 +184,24 @@ export default function App() {
   const [showDone, setShowDone] = useState(false);
   const [showAllInsights, setShowAllInsights] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  const [update, setUpdate] = useState<AppUpdate | null>(null);
   const showError = useCallback(
     (error: unknown) => setToast({ text: errorMessage(error), error: true }),
     [],
   );
   const close = () => setModal(null);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    checkForUpdate(controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) setUpdate(result);
+      })
+      .catch(() => {
+        // An offline release check must not interrupt local accounting.
+      });
+    return () => controller.abort();
+  }, []);
   useEffect(() => {
     let active = true;
     loadData()
@@ -609,6 +624,26 @@ export default function App() {
           </button>
         </div>
         <ExchangeRateBar />
+        {update && (
+          <div className="update-banner glass" role="status">
+            <span>Доступна новая версия finacc {update.version}</span>
+            <a
+              className="button primary"
+              href={update.url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => {
+                if (isTauri()) {
+                  event.preventDefault();
+                  openUrl(update.url).catch(showError);
+                }
+              }}
+            >
+              <Download size={16} />
+              Скачать обновление
+            </a>
+          </div>
+        )}
         {data.demo && (
           <div className="demo-banner">
             <span>
@@ -988,15 +1023,6 @@ export default function App() {
                     <div className="budget-card-heading">
                       <CategoryIcon category={c} />
                       <h3>{c.name}</h3>
-                      <button
-                        className="icon-button"
-                        aria-label={`Лимит: ${c.name}`}
-                        onClick={() =>
-                          setModal({ type: "budget", category: c })
-                        }
-                      >
-                        <Pencil size={16} />
-                      </button>
                     </div>
                     <div className="budget-amount">
                       <strong>{<Money amount={c.amount} />}</strong>
@@ -1015,30 +1041,26 @@ export default function App() {
                       }
                       label={`Лимит ${c.name}`}
                     />
-                    <div className="budget-caption">
-                      {c.limit ? (
-                        <>
-                          <span>
-                            {percent > 100
-                              ? `Перерасход ${money(c.amount - c.limit)}`
-                              : percent === 100
-                                ? "Лимит использован"
-                                : `Осталось ${money(c.limit - c.amount)}`}
-                          </span>
-                          <strong>{Math.round(percent)}%</strong>
-                        </>
-                      ) : (
-                        <button
-                          className="text-button"
-                          onClick={() =>
-                            setModal({ type: "budget", category: c })
-                          }
-                        >
-                          <Plus size={14} />
-                          Задать лимит
-                        </button>
-                      )}
-                    </div>
+                    {!!c.limit && (
+                      <div className="budget-caption">
+                        <span>
+                          {percent > 100
+                            ? `Перерасход ${money(c.amount - c.limit)}`
+                            : percent === 100
+                              ? "Лимит использован"
+                              : `Осталось ${money(c.limit - c.amount)}`}
+                        </span>
+                        <strong>{Math.round(percent)}%</strong>
+                      </div>
+                    )}
+                    <button
+                      className="text-button budget-limit"
+                      aria-label={`Задать лимит: ${c.name}`}
+                      onClick={() => setModal({ type: "budget", category: c })}
+                    >
+                      <Plus size={14} />
+                      Задать лимит
+                    </button>
                   </Card>
                 );
               })}
@@ -1573,6 +1595,13 @@ export default function App() {
           </span>
         </footer>
       </main>
+      <button
+        className="button primary mobile-add-operation"
+        aria-label="Добавить операцию"
+        onClick={() => setModal({ type: "transaction" })}
+      >
+        <Plus size={24} />
+      </button>
       <nav className="mobile-nav glass" aria-label="Мобильная навигация">
         {navigation
           .filter((n) => n.id !== "reminders")

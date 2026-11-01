@@ -508,6 +508,20 @@ button:active:not(:disabled) {
 .export-link:hover {
   color: var(--accent);
 }
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  border-radius: 14px;
+  font-size: 12px;
+}
+.update-banner .button {
+  font-size: 12px;
+}
 .demo-banner {
   display: flex;
   justify-content: space-between;
@@ -1279,7 +1293,8 @@ button:active:not(:disabled) {
   align-items: center;
   gap: 6px;
 }
-.mobile-nav {
+.mobile-nav,
+.mobile-add-operation {
   display: none;
 }
 .two-metrics {
@@ -1493,9 +1508,8 @@ button:active:not(:disabled) {
   font-size: 12px;
   flex: 1;
 }
-.budget-card-heading > .icon-button {
-  color: var(--muted);
-  min-width: 26px;
+.budget-limit {
+  margin-top: 13px;
 }
 .budget-amount {
   display: flex;
@@ -2556,7 +2570,7 @@ select {
   }
   .main-content {
     margin-left: 0;
-    padding: 0 21px 90px;
+    padding: 0 21px calc(90px + env(safe-area-inset-bottom, 0px));
   }
   .topbar {
     height: 66px;
@@ -2610,10 +2624,14 @@ select {
     max-width: 350px;
   }
   .add-operation {
+    display: none;
+  }
+  .mobile-add-operation {
+    display: inline-flex;
     position: fixed;
     right: 21px;
-    bottom: 95px;
-    z-index: 25;
+    bottom: calc(82px + env(safe-area-inset-bottom, 0px));
+    z-index: 40;
     height: 51px;
     width: 51px;
     border-radius: 17px;
@@ -2621,13 +2639,6 @@ select {
     box-shadow:
       0 7px 20px rgba(0, 0, 0, 0.25),
       inset 0 1px 0 rgba(148, 183, 235, 0.08);
-  }
-  .add-operation > span {
-    display: none;
-  }
-  .add-operation > svg {
-    width: 24px;
-    height: 24px;
   }
   .period-toolbar {
     gap: 10px;
@@ -2964,36 +2975,40 @@ select {
   .mobile-nav {
     display: flex;
     position: fixed;
-    bottom: 14px;
-    left: 14px;
-    right: 14px;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: calc(100% - 24px);
+    height: 60px;
     z-index: 30;
-    border-radius: 22px;
-    padding: 9px 6px 8px;
-    justify-content: space-around;
+    border-radius: 18px;
+    padding: 5px;
+    gap: 2px;
     align-items: center;
     background: rgba(9, 15, 27, 0.96);
     box-shadow:
       0 7px 30px rgba(0, 0, 0, 0.25),
       inset 0 1px 0 rgba(148, 183, 235, 0.08);
-    padding-bottom: calc(8px + env(safe-area-inset-bottom));
-    bottom: max(12px, env(safe-area-inset-bottom));
   }
   .mobile-nav button {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
     align-items: center;
     justify-content: center;
     color: var(--muted);
-    min-width: 52px;
-    padding: 5px 7px;
+    width: 58px;
+    min-height: 48px;
+    flex-shrink: 0;
+    padding: 4px 2px;
     border-radius: 13px;
     position: relative;
   }
   .mobile-nav button > span {
-    font-size: 8px;
+    font-size: 10px;
     letter-spacing: -0.1px;
+    white-space: nowrap;
   }
   .mobile-nav button.active {
     color: var(--accent);
@@ -3125,12 +3140,6 @@ select {
     font-size: 10px;
     flex-basis: 100%;
     margin-top: 5px;
-  }
-  .budget-card-heading > .icon-button {
-    position: absolute;
-    right: -4px;
-    top: 1px;
-    min-width: 27px;
   }
   .budget-amount {
     gap: 5px;
@@ -3376,7 +3385,7 @@ select {
     height: 27px;
   }
   .toast {
-    bottom: 91px;
+    bottom: calc(150px + env(safe-area-inset-bottom, 0px));
     left: 50%;
     font-size: 10px;
     max-width: calc(100vw - 32px);
@@ -3638,13 +3647,6 @@ select {
   }
   .insight-panel .eyebrow {
     font-size: 8px;
-  }
-  .mobile-nav button > span {
-    font-size: 10px;
-  }
-  .mobile-nav button {
-    min-width: 57px;
-    min-height: 45px;
   }
   .budget-card-heading h3 {
     font-size: 12px;

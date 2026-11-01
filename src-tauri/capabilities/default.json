@@ -9,7 +9,14 @@
     "sql:allow-execute",
     {
       "identifier": "http:default",
-      "allow": [{ "url": "https://www.cbr.ru/scripts/XML_daily.asp" }]
+      "allow": [
+        { "url": "https://www.cbr.ru/scripts/XML_daily.asp" },
+        { "url": "https://api.github.com/repos/enty9/finacc/releases/latest" }
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/enty9/finacc/releases/tag/*" }]
     },
     "notification:default",
     "dialog:allow-save",

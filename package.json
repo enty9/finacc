@@ -1,7 +1,7 @@
 {
   "name": "finacc",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "engines": {
     "node": ">=22.18.0"
@@ -12,6 +12,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "tauri": "tauri",
     "android:dev": "tauri android dev",
+    "preandroid:build": "tauri icon public/favicon.svg --ios-color '#060a12'",
     "android:build": "tauri android build --apk"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
     "@tauri-apps/plugin-fs": "^2.0.0",
     "@tauri-apps/plugin-http": "^2.8.3",
     "@tauri-apps/plugin-notification": "^2.0.0",
+    "@tauri-apps/plugin-opener": "^2.7.2",
     "@tauri-apps/plugin-sql": "^2.6.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
