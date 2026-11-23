@@ -1410,6 +1410,10 @@ button.wealth-strip-item:hover {
   margin-bottom: 20px;
 }
 
+.insights-list {
+  margin-top: 20px;
+}
+
 .comparison-table-wrap {
   overflow-x: auto;
 }

@@ -1,118 +1,131 @@
-import { Money, ExchangeRateBar, useMoney, useCurrency } from "./currency";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  Activity,
   ArrowDownLeft,
-  ArrowUpRight,
-  ArrowRight,
   BarChart3,
   Bell,
   Check,
-  CheckCheck,
   ChevronLeft,
   ChevronRight,
   CircleHelp,
-  CreditCard,
   DollarSign,
   Download,
-  Eye,
-  EyeOff,
-  FileText,
   Flag,
   LayoutDashboard,
-  Leaf,
   LockKeyhole,
-  Pencil,
   Plus,
-  Search,
   Settings2,
   ShieldCheck,
-  SlidersHorizontal,
-  Sparkles,
   Target,
-  Trash2,
-  TrendingUp,
   Upload,
   Wallet,
   X,
   type LucideIcon,
 } from "lucide-react";
 import {
+  Modal,
+  PinLockScreen,
+  QrScannerModal,
+  ReminderIcon,
+  SubmitForm,
+} from "./components";
+import { ExchangeRateBar, Money, useCurrency, useMoney } from "./currency";
+import {
   balances,
-  categoryTotals,
-  changePercent,
+  currentPeriodMonth,
   dateKey,
-  emptyData,
+  decodeData,
   exportCsv,
   insights,
   monthKey,
   monthName,
+  periodBounds,
   periodEnd,
   periodTransactions,
   previousPeriod,
   shiftMonth,
   totals,
+  type Account,
   type Category,
   type Data,
   type Debt,
+  type DebtDirection,
   type Page,
   type Reminder,
   type Saving,
   type Transaction,
 } from "./domain";
 import {
-  Card,
-  CardHeading,
-  CategoryIcon,
-  Empty,
-  FlowIcon,
-  GoalCard,
-  Modal,
-  Progress,
-  ReminderIcon,
-  SubmitForm,
-  TransactionList,
-} from "./components";
-import { CashChart, ExpenseChart, Sparkline } from "./charts";
-import { isTauri } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { checkForUpdate, type AppUpdate } from "./updates";
-import {
+  AccountForm,
+  AccountTransferForm,
   BudgetForm,
+  CategoryManager,
+  CsvImportForm,
+  EncryptedExportForm,
+  EncryptedRestoreForm,
   EntityForm,
   ReminderForm,
   SettingsForm,
   TransactionForm,
   TransferForm,
   type Commit,
+  type TransactionDraft,
 } from "./forms";
+import { encryptBackup, isEncryptedBackup, type PinLockRecord } from "./crypto";
+import { parseBankCsv, type BankCsvParseResult } from "./import";
+import { BudgetPage } from "./pages/BudgetPage";
+import { GoalsPage, type GoalTab } from "./pages/GoalsPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { RemindersPage } from "./pages/RemindersPage";
+import { ReportsPage } from "./pages/ReportsPage";
+import { TransactionsPage } from "./pages/TransactionsPage";
 import {
   android,
+  clearPinLock,
   enableNotifications,
+  hapticTap,
   loadData,
+  loadPinLock,
   notifyBudget,
   persistData,
-  pickBackup,
+  pickBackupRaw,
+  pickCsvText,
   saveFile,
+  savePinLock,
   syncReminders,
 } from "./platform";
+import { checkForUpdate, type AppUpdate } from "./updates";
 
 type ModalState =
-  | { type: "transaction"; transaction?: Transaction }
+  | { type: "transaction"; transaction?: Transaction; draft?: TransactionDraft }
+  | { type: "qr" }
   | { type: "budget"; category: Category }
-  | { type: "entity"; debt: boolean; entity?: Saving | Debt }
+  | {
+      type: "entity";
+      debt: boolean;
+      defaultDirection?: DebtDirection;
+      entity?: Saving | Debt;
+    }
   | { type: "transfer"; debt: boolean; entity: Saving | Debt }
+  | { type: "account"; account?: Account }
+  | { type: "account-transfer" }
+  | { type: "categories" }
   | { type: "reminder"; reminder?: Reminder }
   | { type: "settings" }
   | { type: "help" }
   | { type: "import"; data: Data }
-  | { type: "start" };
+  | { type: "decrypt"; envelope: unknown }
+  | { type: "encrypt-export" }
+  | { type: "csv-import"; parsed: BankCsvParseResult };
+
 const navigation: {
   id: Page;
   title: string;
@@ -131,6 +144,7 @@ const navigation: {
   { id: "reports", title: "Отчеты", short: "Отчеты", icon: BarChart3 },
   { id: "reminders", title: "Напоминания", short: "Напоминания", icon: Bell },
 ];
+
 const titles: Record<Page, [string, string]> = {
   overview: [
     "Финансы в равновесии",
@@ -146,7 +160,7 @@ const titles: Record<Page, [string, string]> = {
   ],
   goals: [
     "Ближе к тому, что важно",
-    "Копите на мечты и постепенно закрывайте долги.",
+    "Копите на мечты и управляйте долгами.",
   ],
   reports: [
     "Вся картина в деталях",
@@ -157,39 +171,109 @@ const titles: Record<Page, [string, string]> = {
     "Счета, платежи и полезные финансовые привычки.",
   ],
 };
+
+const themeColors = {
+  glass: "#050914",
+  oled: "#000000",
+  light: "#eef4fc",
+} as const;
+
 const errorMessage = (e: unknown) =>
   e instanceof Error
     ? e.message
     : "Не удалось выполнить действие. Попробуйте еще раз.";
 
 export default function App() {
-  const money = useMoney();
-  const { rate: exchangeRate } = useCurrency();
+  const formatDual = useMoney();
+  const { rate: exchangeRate, setSecondaryCurrency } = useCurrency();
+
   const [data, setData] = useState<Data | null>(null);
   const dataRef = useRef<Data | null>(null);
   const saving = useRef(false);
   const [loadError, setLoadError] = useState("");
+  const [pinLock, setPinLock] = useState<PinLockRecord | null>(null);
+  const [unlocked, setUnlocked] = useState(true);
+  const [authReady, setAuthReady] = useState(false);
+
   const [page, setPage] = useState<Page>("overview");
   const [month, setMonth] = useState(monthKey());
   const [modal, setModal] = useState<ModalState | null>(null);
-  const [toast, setToast] = useState<{ text: string; error: boolean } | null>(
-    null,
-  );
+  const [toast, setToast] = useState<{
+    text: string;
+    error: boolean;
+    undo?: () => Promise<void>;
+  } | null>(null);
   const [hidden, setHidden] = useState(false);
-  const [search, setSearch] = useState("");
-  const [kindFilter, setKindFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
-  const [goalTab, setGoalTab] = useState<"saving" | "debt">("saving");
+  const [goalTab, setGoalTab] = useState<GoalTab>("saving");
   const [annual, setAnnual] = useState(false);
-  const [showDone, setShowDone] = useState(false);
-  const [showAllInsights, setShowAllInsights] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [update, setUpdate] = useState<AppUpdate | null>(null);
+
+  const modalRef = useRef<ModalState | null>(null);
+  const pageRef = useRef<Page>("overview");
+  const suppressNextPopRef = useRef(false);
+  const initFlagsDoneRef = useRef(false);
+
+  modalRef.current = modal;
+  pageRef.current = page;
+
   const showError = useCallback(
     (error: unknown) => setToast({ text: errorMessage(error), error: true }),
     [],
   );
-  const close = () => setModal(null);
+
+  const openModal = useCallback((next: ModalState) => {
+    if (!window.history.state?.finaccModal) {
+      window.history.pushState({ finaccModal: true }, "");
+    }
+    setModal(next);
+  }, []);
+
+  const close = useCallback(() => {
+    setModal(null);
+    if (window.history.state?.finaccModal) {
+      suppressNextPopRef.current = true;
+      window.history.back();
+    }
+  }, []);
+
+  const navigate = useCallback((next: Page) => {
+    hapticTap();
+    if (next === "overview") {
+      if (pageRef.current !== "overview" && window.history.state?.finaccPage) {
+        suppressNextPopRef.current = true;
+        window.history.back();
+      }
+    } else if (pageRef.current === "overview") {
+      window.history.pushState({ finaccPage: next }, "");
+    } else if (window.history.state?.finaccPage) {
+      window.history.replaceState({ finaccPage: next }, "");
+    } else {
+      window.history.pushState({ finaccPage: next }, "");
+    }
+    setPage(next);
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (suppressNextPopRef.current) {
+        suppressNextPopRef.current = false;
+        return;
+      }
+      if (modalRef.current !== null) {
+        setModal(null);
+        return;
+      }
+      if (pageRef.current !== "overview") {
+        setPage("overview");
+        window.scrollTo({ top: 0, behavior: "instant" });
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -198,46 +282,68 @@ export default function App() {
         if (!controller.signal.aborted) setUpdate(result);
       })
       .catch(() => {
-        // An offline release check must not interrupt local accounting.
+        /* An offline release check must not interrupt local accounting. */
       });
     return () => controller.abort();
   }, []);
+
   useEffect(() => {
     let active = true;
-    loadData()
-      .then((result) => {
-        if (active) {
-          dataRef.current = result;
-          setData(result);
+    Promise.all([loadData(), loadPinLock()])
+      .then(([result, lock]) => {
+        if (!active) return;
+        dataRef.current = result;
+        setData(result);
+        setPinLock(lock);
+        setUnlocked(!lock);
+        setAuthReady(true);
+        if (!initFlagsDoneRef.current) {
+          initFlagsDoneRef.current = true;
+          setHidden(result.preferences.hideBalancesOnStart);
+          setMonth(currentPeriodMonth(result.preferences.paydayDay));
         }
       })
       .catch((e) => {
-        if (active) setLoadError(errorMessage(e));
+        if (active) {
+          setLoadError(errorMessage(e));
+          setAuthReady(true);
+        }
       });
     return () => {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!data) return;
+    setSecondaryCurrency(data.preferences.secondaryCurrency);
+    document.documentElement.dataset.theme = data.preferences.theme;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) {
+      meta.setAttribute("content", themeColors[data.preferences.theme]);
+    }
+  }, [data, setSecondaryCurrency]);
+
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(
-      () => setToast(null),
-      toast.error ? 10000 : 4000,
-    );
+    const duration = toast.error ? 10000 : toast.undo ? 6000 : 4000;
+    const timer = window.setTimeout(() => setToast(null), duration);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
   useEffect(() => {
     if (!data) return;
     syncReminders(data).catch(showError);
-  }, [data?.reminders, data?.notifications, data?.demo, showError]); // Scheduling follows the saved reminder list, including completion and deletion.
+  }, [data?.reminders, data?.notifications, data?.demo, showError]);
+
   const commit: Commit = useCallback(
-    async (update) => {
+    async (updateFn) => {
       if (!dataRef.current || saving.current)
         throw new Error("Дождитесь сохранения предыдущего изменения.");
       saving.current = true;
       const before = dataRef.current;
       try {
-        const next = update(before);
+        const next = updateFn(before);
         await persistData(next);
         dataRef.current = next;
         setData(next);
@@ -249,12 +355,56 @@ export default function App() {
     },
     [showError],
   );
-  const navigate = (next: Page) => {
-    setPage(next);
-    window.scrollTo({ top: 0, behavior: "instant" });
-  };
 
-  if (loadError)
+  const period = annual && page === "reports" ? month.slice(0, 4) : month;
+  const selected = useMemo(
+    () => (data ? periodTransactions(data, period) : []),
+    [data, period],
+  );
+  const sum = useMemo(() => totals(selected), [selected]);
+  const prior = useMemo(
+    () => (data ? totals(periodTransactions(data, previousPeriod(period))) : { income: 0, expense: 0 }),
+    [data, period],
+  );
+  const balance = useMemo(
+    () =>
+      data
+        ? balances(data, periodEnd(period, data.preferences.paydayDay))
+        : { cash: 0, overdraft: 0, saved: 0, debt: 0, receivable: 0 },
+    [data, period],
+  );
+  const currentBalance = useMemo(
+    () =>
+      data
+        ? balances(data)
+        : { cash: 0, overdraft: 0, saved: 0, debt: 0, receivable: 0 },
+    [data],
+  );
+  const allInsights = useMemo(
+    () => (data ? insights(data, month, formatDual, false) : []),
+    [data, month, formatDual],
+  );
+  const upcoming = useMemo(
+    () =>
+      data
+        ? data.reminders
+            .filter((r) => !r.done)
+            .sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`))
+        : [],
+    [data],
+  );
+  const sortedTransactions = useMemo(() => {
+    if (!data) return [];
+    const orderMap = new Map(data.transactions.map((t, i) => [t.id, i]));
+    return [...selected].sort(
+      (a, b) =>
+        b.date.localeCompare(a.date) ||
+        (b.createdAt ?? 0) - (a.createdAt ?? 0) ||
+        (orderMap.get(b.id) ?? 0) - (orderMap.get(a.id) ?? 0),
+    );
+  }, [data, selected]);
+
+  if (loadError) {
     return (
       <div className="loading-screen">
         <div className="brand-icon">
@@ -263,12 +413,18 @@ export default function App() {
         <h1>Не удалось прочитать данные</h1>
         <p>{loadError}</p>
         <p>Сохраненные данные не перезаписаны.</p>
-        <button className="button primary" onClick={() => location.reload()}>
+        <button
+          type="button"
+          className="button primary"
+          onClick={() => location.reload()}
+        >
           Попробовать снова
         </button>
       </div>
     );
-  if (!data)
+  }
+
+  if (!data || !authReady) {
     return (
       <div className="loading-screen">
         <div className="brand-icon loading">
@@ -278,40 +434,16 @@ export default function App() {
         <p>Собираем вашу финансовую картину…</p>
       </div>
     );
+  }
 
-  const period = annual && page === "reports" ? month.slice(0, 4) : month;
-  const selected = periodTransactions(data, period);
-  const sum = totals(selected);
-  const prior = totals(periodTransactions(data, previousPeriod(period)));
-  const balance = balances(data, periodEnd(period));
-  const currentBalance = balances(data);
-  const categories = categoryTotals(data, month);
-  const allInsights = insights(data, month, money);
-  const upcoming = data.reminders
-    .filter((r) => !r.done)
-    .sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`));
-  const sortedTransactions = [...selected].sort(
-    (a, b) =>
-      b.date.localeCompare(a.date) ||
-      data.transactions.indexOf(b) - data.transactions.indexOf(a),
-  );
-  const filtered = sortedTransactions.filter(
-    (t) =>
-      (kindFilter === "all" || t.kind === kindFilter) &&
-      (categoryFilter === "all" || t.categoryId === categoryFilter) &&
-      `${t.title} ${t.note} ${data.categories.find((c) => c.id === t.categoryId)?.name}`
-        .toLocaleLowerCase("ru")
-        .includes(search.trim().toLocaleLowerCase("ru")),
-  );
-  const budgetTotal = categories.reduce((s, c) => s + c.limit, 0);
-  const budgetSpent = categories
-    .filter((c) => c.limit > 0)
-    .reduce((s, c) => s + c.amount, 0);
-  const rate =
-    sum.income > 0
-      ? Math.round(((sum.income - sum.expense) / sum.income) * 100)
-      : 0;
-  const doneCount = data.reminders.filter((r) => r.done).length;
+  if (pinLock && !unlocked) {
+    return (
+      <PinLockScreen
+        lockRecord={pinLock}
+        onUnlock={() => setUnlocked(true)}
+      />
+    );
+  }
 
   async function exportFile(backup = false) {
     if (!data || exportBusy) return;
@@ -339,69 +471,51 @@ export default function App() {
       setExportBusy(false);
     }
   }
+
   async function importFile() {
     try {
-      const backup = await pickBackup();
-      if (backup) setModal({ type: "import", data: backup });
+      const raw = await pickBackupRaw();
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (isEncryptedBackup(parsed)) {
+        openModal({ type: "decrypt", envelope: parsed });
+        return;
+      }
+      openModal({ type: "import", data: decodeData(parsed) });
     } catch (e) {
       showError(e);
     }
   }
-  const editTransaction = (transaction: Transaction) =>
-    setModal({ type: "transaction", transaction });
-  const metric = (kind: "income" | "expense") => {
-    const change = changePercent(sum[kind], prior[kind]);
-    const values = Array.from(
-      { length: 6 },
-      (_, i) =>
-        totals(periodTransactions(data, shiftMonth(month, i - 5)))[kind],
-    );
-    return (
-      <Card className={`metric-card ${kind}`}>
-        <div className="metric-title">
-          <span>{kind === "income" ? "Доходы" : "Расходы"}</span>
-          <FlowIcon kind={kind} />
-        </div>
-        <div className="metric-value">
-          <strong>{<Money amount={sum[kind]} />}</strong>
-          <Sparkline expense={kind === "expense"} values={values} />
-        </div>
-        <p className="metric-change">
-          {change !== null ? (
-            <>
-              <span
-                className={
-                  (kind === "income" ? change >= 0 : change <= 0)
-                    ? "positive"
-                    : "warm"
-                }
-              >
-                {change > 0 ? "+" : ""}
-                {change}%
-              </span>{" "}
-              к прошлому {period.length === 4 ? "году" : "месяцу"}
-            </>
-          ) : (
-            <>
-              За{" "}
-              {period.length === 4
-                ? `${period} год`
-                : monthName(month).toLocaleLowerCase("ru")}
-            </>
-          )}
-        </p>
-      </Card>
-    );
-  };
-  const reminderRow = (reminder: Reminder, compact = false) => (
-    <div
-      className={`reminder-row ${reminder.done ? "done" : ""}`}
-      key={reminder.id}
-    >
+
+  async function startCsvImport() {
+    if (!data) return;
+    try {
+      const text = await pickCsvText();
+      if (!text) return;
+      const defaultAcc =
+        data.accounts.find((a) => !a.archived)?.id ??
+        data.accounts[0]?.id ??
+        "main";
+      const parsed = parseBankCsv(text, data.categories, defaultAcc);
+      openModal({ type: "csv-import", parsed });
+    } catch (e) {
+      showError(e);
+    }
+  }
+
+  const maxPeriodMonth = currentPeriodMonth(data.preferences.paydayDay);
+  const periodLabel =
+    data.preferences.paydayDay > 1
+      ? periodBounds(month, data.preferences.paydayDay).label
+      : monthName(month);
+
+  const renderReminderCompact = (reminder: Reminder) => (
+    <div className="reminder-row" key={reminder.id}>
       <ReminderIcon type={reminder.type} />
       <button
+        type="button"
         className="reminder-info"
-        onClick={() => setModal({ type: "reminder", reminder })}
+        onClick={() => openModal({ type: "reminder", reminder })}
       >
         <strong>{reminder.title}</strong>
         <span
@@ -411,58 +525,20 @@ export default function App() {
             day: "numeric",
             month: "long",
           })}
-          {!compact && ` · ${reminder.time}`}
           {reminder.date < dateKey() && !reminder.done ? " · просрочено" : ""}
         </span>
       </button>
       {reminder.amount > 0 && (
         <strong className="reminder-amount">
-          {<Money amount={reminder.amount} />}
+          <Money amount={reminder.amount} />
         </strong>
-      )}
-      {!compact && (
-        <button
-          className={`icon-button completion ${reminder.done ? "completed" : ""}`}
-          aria-label={
-            reminder.done
-              ? `Вернуть: ${reminder.title}`
-              : `Готово: ${reminder.title}`
-          }
-          onClick={() =>
-            commit((d) => ({
-              ...d,
-              reminders: d.reminders.map((r) =>
-                r.id === reminder.id ? { ...r, done: !r.done } : r,
-              ),
-            })).catch(showError)
-          }
-        >
-          <Check size={17} />
-        </button>
-      )}
-      {!compact && (
-        <button
-          className="icon-button subtle"
-          aria-label={`Удалить напоминание: ${reminder.title}`}
-          onClick={() => {
-            if (window.confirm(`Удалить напоминание «${reminder.title}»?`))
-              commit((d) => ({
-                ...d,
-                reminders: d.reminders.filter((r) => r.id !== reminder.id),
-              })).catch(showError);
-          }}
-        >
-          <Trash2 size={15} />
-        </button>
       )}
     </div>
   );
 
   return (
     <div className="app-shell">
-      <div className="ambient ambient-one" />
-      <div className="ambient ambient-two" />
-      <aside className="sidebar glass">
+      <aside className="sidebar glass-floating">
         <a
           className="brand"
           href="#"
@@ -473,7 +549,7 @@ export default function App() {
           aria-label="finacc — на главную"
         >
           <span className="brand-icon">
-            <DollarSign size={28} strokeWidth={2} />
+            <DollarSign size={26} strokeWidth={2} />
           </span>
           <span>
             finacc<span className="brand-dot">.</span>
@@ -484,6 +560,7 @@ export default function App() {
         <nav aria-label="Основная навигация">
           {navigation.map(({ id, title, icon: Icon }) => (
             <button
+              type="button"
               key={id}
               className={`nav-item ${page === id ? "active" : ""}`}
               onClick={() => navigate(id)}
@@ -500,28 +577,30 @@ export default function App() {
         </nav>
         <div className="sidebar-bottom">
           <button
+            type="button"
             className="help-link"
-            onClick={() => setModal({ type: "help" })}
+            onClick={() => openModal({ type: "help" })}
           >
             <CircleHelp size={18} />
             Как устроен finacc
-            <ArrowRight size={14} />
           </button>
           <button
+            type="button"
             className="profile"
-            onClick={() => setModal({ type: "settings" })}
+            onClick={() => openModal({ type: "settings" })}
           >
             <span className="avatar">
               {(data.name || "Я").slice(0, 1).toUpperCase()}
             </span>
             <span>
               <strong>{data.name || "Мой finacc"}</strong>
-              <small>Личное пространство</small>
+              <small>Настройки</small>
             </span>
             <Settings2 size={18} />
           </button>
         </div>
       </aside>
+
       <main className="main-content">
         <header className="topbar">
           <div className="topbar-context">
@@ -533,7 +612,27 @@ export default function App() {
               <LockKeyhole size={13} />
               Только на вашем устройстве
             </span>
+            {pinLock && (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Заблокировать экран"
+                title="Заблокировать"
+                onClick={() => setUnlocked(false)}
+              >
+                <LockKeyhole size={19} strokeWidth={1.7} />
+              </button>
+            )}
             <button
+              type="button"
+              className="icon-button mobile-only-btn"
+              aria-label="Как устроен finacc"
+              onClick={() => openModal({ type: "help" })}
+            >
+              <CircleHelp size={20} strokeWidth={1.6} />
+            </button>
+            <button
+              type="button"
               className={`icon-button notification-button ${page === "reminders" ? "selected" : ""}`}
               aria-label="Напоминания"
               onClick={() => navigate("reminders")}
@@ -542,14 +641,16 @@ export default function App() {
               {upcoming.length > 0 && <i />}
             </button>
             <button
-              className="icon-button mobile-settings"
+              type="button"
+              className="icon-button mobile-only-btn"
               aria-label="Настройки"
-              onClick={() => setModal({ type: "settings" })}
+              onClick={() => openModal({ type: "settings" })}
             >
               <Settings2 size={20} />
             </button>
           </div>
         </header>
+
         <div className="page-heading">
           <div>
             <span className="eyebrow">
@@ -564,71 +665,81 @@ export default function App() {
             <p>{titles[page][1]}</p>
           </div>
           <button
+            type="button"
             className="button primary add-operation"
             aria-label="Добавить операцию"
-            onClick={() => setModal({ type: "transaction" })}
+            onClick={() => openModal({ type: "transaction" })}
           >
             <Plus size={18} />
             <span>Добавить операцию</span>
           </button>
         </div>
+
         <div className="period-toolbar">
-          <div className="period-selector glass">
+          <div className="period-selector glass-surface">
             <button
+              type="button"
               className="icon-button"
-              aria-label="Предыдущий месяц"
+              aria-label="Предыдущий период"
               disabled={month <= "1900-01"}
               onClick={() => setMonth(shiftMonth(month, -1))}
             >
               <ChevronLeft size={17} />
             </button>
             <label className="month-input-label">
-              <span>{monthName(month)}</span>
+              <span>{periodLabel}</span>
               <input
                 aria-label="Отчетный месяц"
                 type="month"
                 value={month}
                 min="1900-01"
-                max={monthKey()}
+                max={maxPeriodMonth}
                 onChange={(e) => {
                   if (
                     /^\d{4}-\d{2}$/.test(e.target.value) &&
                     e.target.value >= "1900-01" &&
-                    e.target.value <= monthKey()
+                    e.target.value <= maxPeriodMonth
                   )
                     setMonth(e.target.value);
                 }}
               />
             </label>
             <button
+              type="button"
               className="icon-button"
-              aria-label="Следующий месяц"
-              disabled={month >= monthKey()}
-              onClick={() => setMonth(shiftMonth(month, 1))}
+              aria-label="Следующий период"
+              disabled={month >= maxPeriodMonth}
+              onClick={() => {
+                const next = shiftMonth(month, 1);
+                if (next <= maxPeriodMonth) setMonth(next);
+              }}
             >
               <ChevronRight size={17} />
             </button>
           </div>
           <span className="period-caption">
-            {month === monthKey()
-              ? "Ваш ритм в этом месяце"
+            {month === maxPeriodMonth
+              ? "Ваш ритм в текущем периоде"
               : "Ваша финансовая история"}
           </span>
           <button
+            type="button"
             className="export-link"
             disabled={exportBusy}
-            onClick={() => exportFile()}
+            onClick={() => void exportFile(false)}
           >
             <Download size={16} />
-            <span>Экспорт данных</span>
+            <span>Экспорт CSV</span>
           </button>
         </div>
+
         <ExchangeRateBar />
+
         {update && (
-          <div className="update-banner glass" role="status">
+          <div className="update-banner glass-surface" role="status">
             <span>Доступна новая версия finacc {update.version}</span>
             <a
-              className="button primary"
+              className="button primary small"
               href={update.url}
               target="_blank"
               rel="noreferrer"
@@ -639,951 +750,136 @@ export default function App() {
                 }
               }}
             >
-              <Download size={16} />
+              <Download size={15} />
               Скачать обновление
             </a>
           </div>
         )}
-        {data.demo && (
-          <div className="demo-banner">
-            <span>
-              <Sparkles size={15} />
-              <span>
-                Знакомьтесь с finacc{" "}
-                <span className="demo-detail">
-                  · сейчас показаны демоданные
-                </span>
-              </span>
-            </span>
-            <button onClick={() => setModal({ type: "start" })}>
-              Начать свой учет
-              <ArrowRight size={14} />
-            </button>
-          </div>
-        )}
 
         {page === "overview" && (
-          <div className="overview-grid">
-            <section className="balance-card glass">
-              <div className="balance-top">
-                <span>
-                  <span className="balance-wallet">
-                    <Wallet size={18} />
-                  </span>
-                  Доступный остаток
-                </span>
-                <button
-                  className="icon-button"
-                  aria-label={hidden ? "Показать остаток" : "Скрыть остаток"}
-                  onClick={() => setHidden(!hidden)}
-                >
-                  {hidden ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
-              <strong className="balance-value">
-                {hidden ? "••• ••• ₽" : <Money amount={balance.cash} />}
-              </strong>
-              <p className="balance-date">
-                {balance.overdraft > 0
-                  ? "Перерасход учтён как долг"
-                  : month === monthKey()
-                    ? "Деньги, которыми можно распоряжаться"
-                    : `На конец ${monthName(month).toLocaleLowerCase("ru")}`}
-              </p>
-              <div className="balance-bottom">
-                <span>
-                  <i />
-                  <span>В вашем ритме</span>
-                </span>
-                <DollarSign size={32} strokeWidth={1.1} />
-              </div>
-              <div className="balance-orb orb-one" />
-              <div className="balance-orb orb-two" />
-            </section>
-            {metric("income")}
-            {metric("expense")}
-            <div className="wealth-strip glass">
-              <div>
-                <span className="wealth-icon savings">
-                  <Target size={19} />
-                </span>
-                <span>
-                  <small>В накоплениях</small>
-                  <strong>
-                    {hidden ? "••• ₽" : <Money amount={balance.saved} />}
-                  </strong>
-                </span>
-                <ArrowUpRight size={17} />
-              </div>
-              <span className="strip-divider" />
-              <div>
-                <span className="wealth-icon debt">
-                  <CreditCard size={19} />
-                </span>
-                <span>
-                  <small>Осталось вернуть</small>
-                  <strong>
-                    {hidden ? "••• ₽" : <Money amount={balance.debt} />}
-                  </strong>
-                </span>
-                <ArrowUpRight size={17} />
-              </div>
-              <span className="strip-divider" />
-              <div className="wealth-insight">
-                <span className="wealth-icon">
-                  <Leaf size={20} />
-                </span>
-                <span>
-                  <strong>
-                    {sum.income
-                      ? `Вы сохранили ${Math.max(0, rate)}% доходов`
-                      : "Начните с маленького шага"}
-                  </strong>
-                  <small>
-                    {sum.income
-                      ? rate >= 20
-                        ? "Хорошая основа для ваших будущих планов"
-                        : "Каждый месяц — возможность найти свой баланс"
-                      : "Добавьте первую операцию, и картина начнет складываться"}
-                  </small>
-                </span>
-              </div>
-            </div>
-            <Card className="flow-card">
-              <CardHeading
-                title="Движение денег"
-                subtitle="Доходы и расходы за полгода"
-              />
-              <div className="chart-legend">
-                <span>
-                  <i className="income-dot" />
-                  Доходы
-                </span>
-                <span>
-                  <i className="expense-dot" />
-                  Расходы
-                </span>
-                <span className="chart-period">
-                  Последние 6 месяцев
-                  <ChevronRight size={13} />
-                </span>
-              </div>
-              <CashChart data={data} month={month} />
-            </Card>
-            <Card className="expenses-card">
-              <CardHeading
-                title="Куда уходят деньги"
-                action="Подробнее"
-                onAction={() => navigate("reports")}
-              />
-              <ExpenseChart data={data} period={month} />
-            </Card>
-            <Card className="recent-card">
-              <CardHeading
-                title="Последние операции"
-                subtitle="Все начинается с простых записей"
-                action="Все операции"
-                onAction={() => navigate("transactions")}
-              />
-              <TransactionList
-                transactions={sortedTransactions.slice(0, 5)}
-                data={data}
-                onEdit={editTransaction}
-                compact
-              />
-            </Card>
-            <Card className="goals-preview">
-              <CardHeading
-                title="К вашим мечтам"
-                action="Все цели"
-                onAction={() => navigate("goals")}
-              />
-              {data.savings.length ? (
-                data.savings.slice(0, 2).map((goal) => (
-                  <button
-                    className="goal-preview-button"
-                    key={goal.id}
-                    onClick={() =>
-                      setModal({ type: "transfer", debt: false, entity: goal })
-                    }
-                  >
-                    <GoalCard
-                      goal={goal}
-                      data={data}
-                      onTransfer={() => {}}
-                      compact
-                    />
-                  </button>
-                ))
-              ) : (
-                <Empty
-                  title="Мечта становится планом"
-                  description="Создайте первую цель накоплений."
-                  action="Создать цель"
-                  onAction={() => setModal({ type: "entity", debt: false })}
-                  icon={Target}
-                />
-              )}
-            </Card>
-            <div className="insight-panel glass">
-              <span className="insight-symbol">
-                <Sparkles size={23} strokeWidth={1.5} />
-              </span>
-              <div>
-                <span className="eyebrow">FINACC ЗАМЕЧАЕТ</span>
-                <h3>{allInsights[0]?.title ?? "Все спокойно. Так держать!"}</h3>
-                <p>
-                  {allInsights[0]?.description ??
-                    "Необычных расходов не обнаружено. Продолжайте записывать операции — это полезная привычка."}
-                </p>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="Посмотреть финансовые подсказки"
-                onClick={() => {
-                  setShowAllInsights(true);
-                  navigate(allInsights[0]?.page ?? "reports");
-                }}
-              >
-                <ArrowRight size={20} />
-              </button>
-            </div>
-            <Card className="reminders-preview">
-              <CardHeading
-                title="Скоро по плану"
-                action="Все напоминания"
-                onAction={() => navigate("reminders")}
-              />
-              {upcoming.length ? (
-                <div className="upcoming-list">
-                  {upcoming.slice(0, 3).map((r) => reminderRow(r, true))}
-                </div>
-              ) : (
-                <div className="quiet-reminder">
-                  <CheckCheck size={20} />
-                  <span>Все дела под контролем. Новых напоминаний нет.</span>
-                </div>
-              )}
-            </Card>
-          </div>
+          <OverviewPage
+            data={data}
+            month={month}
+            hidden={hidden}
+            onToggleHidden={() => setHidden((v) => !v)}
+            balance={balance}
+            sum={sum}
+            prior={prior}
+            sortedTransactions={sortedTransactions}
+            allInsights={allInsights}
+            upcoming={upcoming}
+            onNavigate={navigate}
+            onOpenGoals={(tab) => {
+              setGoalTab(tab);
+              navigate("goals");
+            }}
+            onSelectCategory={(categoryId) => {
+              setCategoryFilter(categoryId);
+              navigate("transactions");
+            }}
+            onAddTransaction={() => openModal({ type: "transaction" })}
+            onEditTransaction={(transaction) =>
+              openModal({ type: "transaction", transaction })
+            }
+            onAddAccount={() => openModal({ type: "account" })}
+            onEditAccount={(account) => openModal({ type: "account", account })}
+            onTransferAccounts={() => openModal({ type: "account-transfer" })}
+            onNewGoal={() => openModal({ type: "entity", debt: false })}
+            onTransferGoal={(entity) =>
+              openModal({ type: "transfer", debt: false, entity })
+            }
+            onShowAllInsights={(targetPage) => navigate(targetPage)}
+            renderReminderRow={renderReminderCompact}
+          />
         )}
 
         {page === "transactions" && (
-          <>
-            <div className="two-metrics">
-              <div className="mini-metric glass">
-                <FlowIcon kind="income" />
-                <span>
-                  Поступило<strong>{<Money amount={sum.income} />}</strong>
-                </span>
-              </div>
-              <div className="mini-metric glass">
-                <FlowIcon kind="expense" />
-                <span>
-                  Потрачено<strong>{<Money amount={sum.expense} />}</strong>
-                </span>
-              </div>
-            </div>
-            <Card className="operations-card">
-              <div className="filters">
-                <label className="search-input">
-                  <Search size={18} />
-                  <input
-                    aria-label="Поиск операций"
-                    placeholder="Найти операцию…"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                </label>
-                <div className="segmented operation-filter">
-                  <button
-                    className={kindFilter === "all" ? "active" : ""}
-                    onClick={() => setKindFilter("all")}
-                  >
-                    Все
-                  </button>
-                  <button
-                    className={kindFilter === "expense" ? "active" : ""}
-                    onClick={() => setKindFilter("expense")}
-                  >
-                    Расходы
-                  </button>
-                  <button
-                    className={kindFilter === "income" ? "active" : ""}
-                    onClick={() => setKindFilter("income")}
-                  >
-                    Доходы
-                  </button>
-                </div>
-                <label className="category-filter">
-                  <SlidersHorizontal size={16} />
-                  <select
-                    aria-label="Фильтр по категории"
-                    value={categoryFilter}
-                    onChange={(e) => setCategoryFilter(e.target.value)}
-                  >
-                    <option value="all">Все категории</option>
-                    {data.categories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <CardHeading
-                title="История операций"
-                subtitle={`${filtered.length} записей · ${monthName(month)}`}
-              />
-              {filtered.length ? (
-                <TransactionList
-                  transactions={filtered}
-                  data={data}
-                  onEdit={editTransaction}
-                />
-              ) : (
-                <Empty
-                  title={
-                    selected.length
-                      ? "Ничего не нашлось"
-                      : "Начните свою историю"
-                  }
-                  description={
-                    selected.length
-                      ? "Измените запрос или выберите другую категорию."
-                      : "Добавьте первую операцию за этот месяц."
-                  }
-                  action={selected.length ? undefined : "Добавить операцию"}
-                  onAction={() => setModal({ type: "transaction" })}
-                />
-              )}
-            </Card>
-            {allInsights.some((i) => i.id.startsWith("duplicate")) && (
-              <Card className="insights-list">
-                <CardHeading title="Стоит проверить" />
-                {allInsights
-                  .filter((i) => i.id.startsWith("duplicate"))
-                  .map((i) => (
-                    <div className="analysis-row" key={i.id}>
-                      <Activity size={19} />
-                      <div>
-                        <h3>{i.title}</h3>
-                        <p>{i.description}</p>
-                      </div>
-                    </div>
-                  ))}
-              </Card>
-            )}
-          </>
+          <TransactionsPage
+            data={data}
+            month={month}
+            sortedPeriodTransactions={sortedTransactions}
+            allInsights={allInsights}
+            categoryFilter={categoryFilter}
+            onCategoryFilterChange={setCategoryFilter}
+            onAddTransaction={(draft) =>
+              openModal({ type: "transaction", draft })
+            }
+            onEditTransaction={(transaction) =>
+              openModal({ type: "transaction", transaction })
+            }
+            onOpenQr={() => openModal({ type: "qr" })}
+            onImportCsv={() => void startCsvImport()}
+          />
         )}
 
         {page === "budget" && (
-          <>
-            <div className="budget-summary glass">
-              <div>
-                <span className="eyebrow">ВАШ ПЛАН НА МЕСЯЦ</span>
-                <h2>
-                  {<Money amount={budgetSpent} />}
-                  <span> / {<Money amount={budgetTotal} />}</span>
-                </h2>
-                <p>
-                  {budgetTotal
-                    ? budgetSpent > budgetTotal
-                      ? `Выше общего плана на ${money(budgetSpent - budgetTotal)}`
-                      : `В пределах лимитов осталось ${money(budgetTotal - budgetSpent)}`
-                    : "Задайте первый лимит, чтобы держать расходы в фокусе"}
-                </p>
-              </div>
-              <div className="budget-summary-progress">
-                <span>
-                  {budgetTotal
-                    ? Math.round((budgetSpent / budgetTotal) * 100)
-                    : 0}
-                  % плана использовано
-                </span>
-                <Progress
-                  value={budgetTotal ? (budgetSpent / budgetTotal) * 100 : 0}
-                  color={budgetSpent > budgetTotal ? "#ff9f9f" : undefined}
-                  label="Использование бюджета"
-                />
-              </div>
-            </div>
-            <div className="section-intro">
-              <h2>У каждой категории свой план</h2>
-              <p>Ежемесячные лимиты · предупреждение при 80% и перерасходе</p>
-            </div>
-            <div className="budget-grid">
-              {categories.map((c) => {
-                const percent = c.limit ? (c.amount / c.limit) * 100 : 0;
-                return (
-                  <Card
-                    className={`budget-card ${percent >= 100 ? "over-budget" : ""}`}
-                    key={c.id}
-                  >
-                    <div className="budget-card-heading">
-                      <CategoryIcon category={c} />
-                      <h3>{c.name}</h3>
-                    </div>
-                    <div className="budget-amount">
-                      <strong>{<Money amount={c.amount} />}</strong>
-                      <span>
-                        {c.limit ? `из ${money(c.limit)}` : "лимит не задан"}
-                      </span>
-                    </div>
-                    <Progress
-                      value={percent}
-                      color={
-                        percent >= 100
-                          ? "#ff9f9f"
-                          : percent >= 80
-                            ? "#f3be77"
-                            : c.color
-                      }
-                      label={`Лимит ${c.name}`}
-                    />
-                    {!!c.limit && (
-                      <div className="budget-caption">
-                        <span>
-                          {percent > 100
-                            ? `Перерасход ${money(c.amount - c.limit)}`
-                            : percent === 100
-                              ? "Лимит использован"
-                              : `Осталось ${money(c.limit - c.amount)}`}
-                        </span>
-                        <strong>{Math.round(percent)}%</strong>
-                      </div>
-                    )}
-                    <button
-                      className="text-button budget-limit"
-                      aria-label={`Задать лимит: ${c.name}`}
-                      onClick={() => setModal({ type: "budget", category: c })}
-                    >
-                      <Plus size={14} />
-                      Задать лимит
-                    </button>
-                  </Card>
-                );
-              })}
-            </div>
-            <p className="page-footnote">
-              <ShieldCheck size={15} />
-              Лимиты помогают планировать, а не ограничивают внесение операций.
-              Расходы без лимита не входят в общий план.
-            </p>
-          </>
+          <BudgetPage
+            data={data}
+            month={month}
+            onSetLimit={(category) => openModal({ type: "budget", category })}
+            onManageCategories={() => openModal({ type: "categories" })}
+          />
         )}
 
         {page === "goals" && (
-          <>
-            <div className="two-metrics">
-              <div className="mini-metric glass">
-                <span className="wealth-icon savings">
-                  <Target size={22} />
-                </span>
-                <span>
-                  Всего накоплено
-                  <strong>{<Money amount={currentBalance.saved} />}</strong>
-                </span>
-              </div>
-              <div className="mini-metric glass">
-                <span className="wealth-icon debt">
-                  <CreditCard size={22} />
-                </span>
-                <span>
-                  Осталось вернуть
-                  <strong>{<Money amount={currentBalance.debt} />}</strong>
-                </span>
-              </div>
-            </div>
-            <div className="section-toolbar">
-              <div className="segmented">
-                <button
-                  className={goalTab === "saving" ? "active" : ""}
-                  onClick={() => setGoalTab("saving")}
-                >
-                  <Target size={16} />
-                  Накопления
-                </button>
-                <button
-                  className={goalTab === "debt" ? "active" : ""}
-                  onClick={() => setGoalTab("debt")}
-                >
-                  <CreditCard size={16} />
-                  Долги
-                </button>
-              </div>
-              <button
-                className="button secondary"
-                onClick={() =>
-                  setModal({ type: "entity", debt: goalTab === "debt" })
-                }
-              >
-                <Plus size={16} />
-                {goalTab === "saving" ? "Новая цель" : "Добавить долг"}
-              </button>
-            </div>
-            <div className="goals-grid">
-              {goalTab === "debt" && currentBalance.overdraft > 0 && (
-                <Card>
-                  <div className="goal-card">
-                    <div className="goal-heading">
-                      <span className="wealth-icon debt">
-                        <CreditCard size={22} />
-                      </span>
-                      <div>
-                        <h3>Долг по перерасходу</h3>
-                        <p>Учтён автоматически</p>
-                      </div>
-                    </div>
-                    <div className="goal-amount">
-                      <strong>
-                        <Money amount={currentBalance.overdraft} />
-                      </strong>
-                      <span>осталось погасить</span>
-                    </div>
-                    <p className="muted">
-                      Поступления денег уменьшают этот долг. Исправление или
-                      удаление операций пересчитывает его.
-                    </p>
-                  </div>
-                </Card>
-              )}
-              {(goalTab === "saving" ? data.savings : data.debts).map(
-                (entity) => (
-                  <Card key={entity.id}>
-                    <div className="entity-tools">
-                      <button
-                        className="icon-button"
-                        aria-label={`Изменить: ${entity.name}`}
-                        onClick={() =>
-                          setModal({
-                            type: "entity",
-                            debt: goalTab === "debt",
-                            entity,
-                          })
-                        }
-                      >
-                        <Pencil size={15} />
-                      </button>
-                    </div>
-                    <GoalCard
-                      goal={entity}
-                      debt={goalTab === "debt"}
-                      data={data}
-                      onTransfer={() =>
-                        setModal({
-                          type: "transfer",
-                          debt: goalTab === "debt",
-                          entity,
-                        })
-                      }
-                    />
-                  </Card>
-                ),
-              )}
-            </div>
-            {(goalTab === "saving"
-              ? data.savings.length === 0
-              : data.debts.length === 0 && currentBalance.overdraft === 0) && (
-              <Card>
-                <Empty
-                  title={
-                    goalTab === "saving"
-                      ? "Дайте мечте название"
-                      : "Без долгов — тоже хороший план"
-                  }
-                  description={
-                    goalTab === "saving"
-                      ? "На поездку, подушку безопасности или что-то свое."
-                      : "Добавьте текущий долг и отмечайте платежи."
-                  }
-                  icon={goalTab === "saving" ? Target : CreditCard}
-                  action={
-                    goalTab === "saving" ? "Создать цель" : "Добавить долг"
-                  }
-                  onAction={() =>
-                    setModal({ type: "entity", debt: goalTab === "debt" })
-                  }
-                />
-              </Card>
-            )}
-            <Card className="movement-history">
-              <CardHeading
-                title="История переводов"
-                subtitle="Взносы и выплаты хранятся отдельно от повседневных расходов"
-              />
-              {data.movements.filter((m) => m.entityType === goalTab).length ? (
-                [...data.movements]
-                  .reverse()
-                  .filter((m) => m.entityType === goalTab)
-                  .map((m) => (
-                    <div className="movement-row" key={m.id}>
-                      <span className="wealth-icon">
-                        <ArrowUpRight size={18} />
-                      </span>
-                      <div>
-                        <strong>
-                          {
-                            (goalTab === "saving"
-                              ? data.savings
-                              : data.debts
-                            ).find((e) => e.id === m.entityId)?.name
-                          }
-                        </strong>
-                        <span>
-                          {m.entityType === "saving"
-                            ? m.amount > 0
-                              ? "Пополнение"
-                              : "Снятие"
-                            : m.amount > 0
-                              ? "Платеж"
-                              : "Получение"}{" "}
-                          ·{" "}
-                          {new Date(`${m.date}T12:00:00`).toLocaleDateString(
-                            "ru-RU",
-                          )}
-                        </span>
-                      </div>
-                      <strong>{<Money amount={Math.abs(m.amount)} />}</strong>
-                      <button
-                        className="icon-button subtle"
-                        aria-label={`Удалить перевод ${money(Math.abs(m.amount))}`}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              "Удалить перевод? Остатки будут пересчитаны.",
-                            )
-                          )
-                            commit((d) => ({
-                              ...d,
-                              movements: d.movements.filter(
-                                (item) => item.id !== m.id,
-                              ),
-                            })).catch(showError);
-                        }}
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  ))
-              ) : (
-                <p className="muted history-empty">
-                  Здесь появятся ваши пополнения и платежи.
-                </p>
-              )}
-            </Card>
-            <p className="page-footnote">
-              <LockKeyhole size={15} />
-              Здесь показаны текущие остатки за все время. Снимок на конец
-              выбранного месяца доступен в отчете.
-            </p>
-          </>
+          <GoalsPage
+            data={data}
+            currentBalance={currentBalance}
+            goalTab={goalTab}
+            onGoalTabChange={setGoalTab}
+            onNewEntity={(debt, defaultDirection) =>
+              openModal({ type: "entity", debt, defaultDirection })
+            }
+            onEditEntity={(debt, entity) =>
+              openModal({ type: "entity", debt, entity })
+            }
+            onTransfer={(debt, entity) =>
+              openModal({ type: "transfer", debt, entity })
+            }
+            commit={commit}
+            onError={showError}
+          />
         )}
 
         {page === "reports" && (
-          <>
-            <div className="section-toolbar report-toolbar">
-              <div className="segmented">
-                <button
-                  className={!annual ? "active" : ""}
-                  onClick={() => setAnnual(false)}
-                >
-                  За месяц
-                </button>
-                <button
-                  className={annual ? "active" : ""}
-                  onClick={() => setAnnual(true)}
-                >
-                  За год
-                </button>
-              </div>
-              <span className="muted">
-                {annual ? `${period} год` : monthName(month)} · в сравнении с{" "}
-                {annual ? "прошлым годом" : "прошлым месяцем"}
-              </span>
-            </div>
-            <div className="report-metrics">
-              {metric("income")}
-              {metric("expense")}
-              <Card className="metric-card">
-                <div className="metric-title">
-                  <span>Разница</span>
-                  <span className="flow-icon income">
-                    <TrendingUp size={18} />
-                  </span>
-                </div>
-                <div className="metric-value">
-                  <strong>{<Money amount={sum.income - sum.expense} />}</strong>
-                </div>
-                <p className="metric-change">
-                  {sum.income > 0
-                    ? `${Math.abs(rate)}% от доходов ${rate >= 0 ? "сохранено" : "сверх доходов потрачено"}`
-                    : "Доходы минус расходы"}
-                </p>
-              </Card>
-            </div>
-            <div className="report-charts">
-              <Card className="flow-card">
-                <CardHeading
-                  title="Доходы и расходы"
-                  subtitle={
-                    annual
-                      ? "Как менялся ваш ритм в течение года"
-                      : "Шесть месяцев в одной картине"
-                  }
-                />
-                <div className="chart-legend">
-                  <span>
-                    <i className="income-dot" />
-                    Доходы
-                  </span>
-                  <span>
-                    <i className="expense-dot" />
-                    Расходы
-                  </span>
-                </div>
-                <CashChart data={data} month={month} year={annual} />
-              </Card>
-              <Card>
-                <CardHeading title="Структура расходов" />
-                <ExpenseChart data={data} period={period} />
-              </Card>
-            </div>
-            <Card className="comparison-card">
-              <CardHeading
-                title="Что изменилось"
-                subtitle="Сравнение выбранных календарных периодов"
-              />
-              <div className="comparison-table-wrap">
-                <table className="comparison-table">
-                  <thead>
-                    <tr>
-                      <th>Показатель</th>
-                      <th>{annual ? period : monthName(month)}</th>
-                      <th>
-                        {annual
-                          ? previousPeriod(period)
-                          : monthName(previousPeriod(period))}
-                      </th>
-                      <th>Изменение</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[
-                      ["Доходы", sum.income, prior.income],
-                      ["Расходы", sum.expense, prior.expense],
-                      [
-                        "Разница",
-                        sum.income - sum.expense,
-                        prior.income - prior.expense,
-                      ],
-                    ].map(([label, current, before]) => {
-                      const change = changePercent(
-                        Number(current),
-                        Number(before),
-                      );
-                      return (
-                        <tr key={label}>
-                          <td>{label}</td>
-                          <td>{<Money amount={Number(current)} />}</td>
-                          <td>{<Money amount={Number(before)} />}</td>
-                          <td>
-                            {change === null
-                              ? "Нет базы сравнения"
-                              : `${change > 0 ? "+" : ""}${change}%`}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {(["saved", "debt"] as const).map((key) => {
-                      const before = balances(
-                        data,
-                        periodEnd(previousPeriod(period)),
-                      )[key];
-                      return (
-                        <tr key={key}>
-                          <td>
-                            {key === "saved"
-                              ? "Накопления на конец периода"
-                              : "Долги на конец периода"}
-                          </td>
-                          <td>{<Money amount={balance[key]} />}</td>
-                          <td>{<Money amount={before} />}</td>
-                          <td>
-                            {balance[key] - before > 0 ? "+" : ""}
-                            {<Money amount={balance[key] - before} />}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-            <Card className="insights-list">
-              <CardHeading
-                title="Внимание к деталям"
-                subtitle="Подсказки по операциям выбранного месяца"
-                action={
-                  allInsights.length > 3
-                    ? showAllInsights
-                      ? "Свернуть"
-                      : "Показать все"
-                    : undefined
-                }
-                onAction={() => setShowAllInsights(!showAllInsights)}
-              />
-              {allInsights.length ? (
-                allInsights
-                  .slice(0, showAllInsights ? undefined : 3)
-                  .map((i) => (
-                    <button
-                      className="analysis-row"
-                      key={i.id}
-                      onClick={() => navigate(i.page)}
-                    >
-                      <span className={`analysis-icon ${i.severity}`}>
-                        <Activity size={19} />
-                      </span>
-                      <div>
-                        <h3>{i.title}</h3>
-                        <p>{i.description}</p>
-                      </div>
-                      <ArrowRight size={17} />
-                    </button>
-                  ))
-              ) : (
-                <div className="quiet-reminder">
-                  <ShieldCheck size={22} />
-                  <span>Необычных операций не обнаружено.</span>
-                </div>
-              )}
-              <p className="analysis-note">
-                Повторы: одинаковые сумма, описание и категория за 48 часов.
-                Рост: от 50% и 3 000 ₽ к прошлому месяцу. Крупные платежи: от 10
-                000 ₽ и трех средних прошлых расходов.
-              </p>
-            </Card>
-            <div className="backup-panel glass">
-              <span className="wealth-icon">
-                <FileText size={24} />
-              </span>
-              <div>
-                <h3>Ваши данные всегда с вами</h3>
-                <p>
-                  CSV — для таблиц. JSON — полная копия операций, целей, лимитов
-                  и напоминаний.
-                </p>
-              </div>
-              <div className="backup-actions">
-                <button
-                  className="button secondary"
-                  disabled={exportBusy}
-                  onClick={() => exportFile(true)}
-                >
-                  <Download size={16} />
-                  Сохранить копию
-                </button>
-                <button className="button ghost" onClick={importFile}>
-                  <Upload size={16} />
-                  Восстановить
-                </button>
-              </div>
-            </div>
-          </>
+          <ReportsPage
+            data={data}
+            month={month}
+            annual={annual}
+            onAnnualChange={setAnnual}
+            exportBusy={exportBusy}
+            onExportBackup={() => void exportFile(true)}
+            onExportEncrypted={() => openModal({ type: "encrypt-export" })}
+            onImportBackup={() => void importFile()}
+            onImportCsv={() => void startCsvImport()}
+            onSelectCategory={(categoryId) => {
+              setCategoryFilter(categoryId);
+              navigate("transactions");
+            }}
+            onNavigate={navigate}
+            commit={commit}
+            onError={showError}
+          />
         )}
 
         {page === "reminders" && (
-          <>
-            <div className="notification-settings glass">
-              <span className="notification-settings-icon">
-                <Bell size={24} strokeWidth={1.5} />
-              </span>
-              <div>
-                <h3>
-                  {data.notifications
-                    ? "Напоминания включены"
-                    : "Пусть важное приходит вовремя"}
-                </h3>
-                <p>
-                  {android
-                    ? data.demo
-                      ? "Сначала начните свой учет. Демоуведомления не отправляются."
-                      : "Android напомнит о платежах, даже когда приложение закрыто."
-                    : "В браузере напоминания видны здесь. Фоновые уведомления доступны на Android."}
-                </p>
-              </div>
-              <button
-                className={`button ${data.notifications ? "secondary" : "primary"}`}
-                disabled={data.demo || !android}
-                onClick={async () => {
-                  try {
-                    if (!data.notifications) await enableNotifications();
-                    await commit((d) => ({
-                      ...d,
-                      notifications: !d.notifications,
-                    }));
-                  } catch (e) {
-                    showError(e);
-                  }
-                }}
-              >
-                {data.notifications ? "Отключить" : "Включить"}
-              </button>
-            </div>
-            <div className="section-toolbar">
-              <div className="segmented">
-                <button
-                  className={!showDone ? "active" : ""}
-                  onClick={() => setShowDone(false)}
-                >
-                  Предстоящие <span>{upcoming.length}</span>
-                </button>
-                <button
-                  className={showDone ? "active" : ""}
-                  onClick={() => setShowDone(true)}
-                >
-                  Готово <span>{doneCount}</span>
-                </button>
-              </div>
-              <button
-                className="button secondary"
-                onClick={() => setModal({ type: "reminder" })}
-              >
-                <Plus size={17} />
-                Напоминание
-              </button>
-            </div>
-            <Card className="reminder-page-list">
-              {(showDone ? data.reminders.filter((r) => r.done) : upcoming)
-                .length ? (
-                (showDone
-                  ? data.reminders.filter((r) => r.done)
-                  : upcoming
-                ).map((r) => reminderRow(r))
-              ) : (
-                <Empty
-                  title={
-                    showDone ? "Все еще впереди" : "Можно спокойно выдохнуть"
-                  }
-                  description={
-                    showDone
-                      ? "Выполненные напоминания появятся здесь."
-                      : "Добавьте важный счет, платеж по кредиту или взнос в накопления."
-                  }
-                  icon={Bell}
-                  action={showDone ? undefined : "Создать напоминание"}
-                  onAction={() => setModal({ type: "reminder" })}
-                />
-              )}
-            </Card>
-            <p className="page-footnote">
-              <CheckCheck size={16} />
-              Отметка о выполнении не создает финансовую операцию. Внесите
-              платеж или взнос отдельно.
-            </p>
-          </>
+          <RemindersPage
+            data={data}
+            upcoming={upcoming}
+            android={android}
+            onEnableNotifications={enableNotifications}
+            onEditReminder={(reminder) =>
+              openModal({ type: "reminder", reminder })
+            }
+            onNewReminder={() => openModal({ type: "reminder" })}
+            commit={commit}
+            onError={showError}
+            onPaid={(title) =>
+              setToast({ text: `Оплачено: «${title}».`, error: false })
+            }
+          />
         )}
+
         <footer className="page-footer">
           <span>
             <DollarSign size={15} />
@@ -1595,36 +891,61 @@ export default function App() {
           </span>
         </footer>
       </main>
+
       <button
+        type="button"
         className="button primary mobile-add-operation"
         aria-label="Добавить операцию"
-        onClick={() => setModal({ type: "transaction" })}
+        onClick={() => {
+          hapticTap();
+          openModal({ type: "transaction" });
+        }}
       >
         <Plus size={24} />
       </button>
-      <nav className="mobile-nav glass" aria-label="Мобильная навигация">
+
+      <nav
+        className="mobile-nav glass-floating"
+        aria-label="Мобильная навигация"
+      >
         {navigation
           .filter((n) => n.id !== "reminders")
           .map(({ id, short, icon: Icon }) => (
             <button
+              type="button"
               className={page === id ? "active" : ""}
               aria-current={page === id ? "page" : undefined}
               key={id}
               onClick={() => navigate(id)}
             >
-              <Icon size={21} strokeWidth={1.7} />
+              <Icon size={20} strokeWidth={1.75} />
               <span>{short}</span>
             </button>
           ))}
       </nav>
+
       {toast && (
         <div
-          className={`toast glass ${toast.error ? "error" : ""}`}
+          className={`toast glass-floating ${toast.error ? "error" : ""}`}
           role={toast.error ? "alert" : "status"}
         >
           {toast.error ? <CircleHelp size={18} /> : <Check size={18} />}
           <span>{toast.text}</span>
+          {toast.undo && (
+            <button
+              type="button"
+              className="toast-undo"
+              onClick={() => {
+                const undoFn = toast.undo;
+                setToast(null);
+                undoFn?.().catch(showError);
+              }}
+            >
+              Отменить
+            </button>
+          )}
           <button
+            type="button"
             className="icon-button"
             aria-label="Закрыть сообщение"
             onClick={() => setToast(null)}
@@ -1633,15 +954,38 @@ export default function App() {
           </button>
         </div>
       )}
+
       {modal && renderModal()}
     </div>
   );
 
   function renderModal() {
     if (!modal || !data) return null;
-    let title = "",
-      description = "";
+
+    if (modal.type === "qr") {
+      return (
+        <QrScannerModal
+          onClose={close}
+          onApply={(qr) => {
+            setModal({
+              type: "transaction",
+              draft: {
+                kind: "expense",
+                amount: qr.amount,
+                date: qr.date,
+                title: qr.title,
+                note: qr.note,
+              },
+            });
+          }}
+        />
+      );
+    }
+
+    let title = "";
+    let description = "";
     let content: ReactNode;
+
     switch (modal.type) {
       case "transaction":
         title = modal.transaction ? "Детали операции" : "Новая операция";
@@ -1650,14 +994,51 @@ export default function App() {
           <TransactionForm
             data={data}
             transaction={modal.transaction}
+            draft={modal.draft}
+            commit={commit}
+            close={close}
+            onOpenQr={() => setModal({ type: "qr" })}
+            onDeleted={(deleted) =>
+              setToast({
+                text: `Удалена операция «${deleted.title}».`,
+                error: false,
+                undo: () =>
+                  commit((d) => ({
+                    ...d,
+                    transactions: [...d.transactions, deleted],
+                  })),
+              })
+            }
+          />
+        );
+        break;
+      case "account":
+        title = modal.account ? "Настройки счета" : "Новый счет";
+        description = "Разделяйте карты, наличные и накопительные счета.";
+        content = (
+          <AccountForm
+            data={data}
+            account={modal.account}
             commit={commit}
             close={close}
           />
         );
         break;
+      case "account-transfer":
+        title = "Перевод между счетами";
+        description = "Перемещение ваших денег без учета в расходах.";
+        content = (
+          <AccountTransferForm data={data} commit={commit} close={close} />
+        );
+        break;
+      case "categories":
+        title = "Категории операций";
+        description = "Меняйте названия, цвета и иконки или удаляйте лишнее.";
+        content = <CategoryManager data={data} commit={commit} />;
+        break;
       case "budget":
         title = modal.category.name;
-        description = "Сколько комфортно потратить за месяц?";
+        description = "Сколько комфортно потратить за период?";
         content = (
           <BudgetForm
             category={modal.category}
@@ -1671,11 +1052,12 @@ export default function App() {
         title = modal.entity
           ? "Изменить план"
           : modal.debt
-            ? "Добавить долг"
+            ? "Запись о долге"
             : "Начнем с мечты";
         content = (
           <EntityForm
             debt={modal.debt}
+            defaultDirection={modal.defaultDirection}
             entity={modal.entity}
             commit={commit}
             close={close}
@@ -1685,7 +1067,7 @@ export default function App() {
       case "transfer":
         title = modal.entity.name;
         description = modal.debt
-          ? "Еще один шаг к свободе от долгов."
+          ? "Операция изменит остаток долга и доступный баланс."
           : "Каждый взнос приближает к цели.";
         content = (
           <TransferForm
@@ -1701,6 +1083,7 @@ export default function App() {
         title = modal.reminder ? "Изменить напоминание" : "Напомнить о важном";
         content = (
           <ReminderForm
+            data={data}
             reminder={modal.reminder}
             commit={commit}
             close={close}
@@ -1711,54 +1094,124 @@ export default function App() {
         title = "Ваше пространство";
         content = (
           <>
-            <SettingsForm data={data} commit={commit} close={close} />
+            <SettingsForm
+              data={data}
+              commit={commit}
+              close={close}
+              hasPinLock={Boolean(pinLock)}
+              onSavePin={async (record) => {
+                await savePinLock(record);
+                setPinLock(record);
+              }}
+              onClearPin={async () => {
+                await clearPinLock();
+                setPinLock(null);
+              }}
+              onManageCategories={() => setModal({ type: "categories" })}
+            />
             <div className="settings-backup">
-              <h3>Резервные копии</h3>
+              <h3>Резервные копии и импорт</h3>
               <p>
-                Сохраните JSON-копию, чтобы перенести учет на другое устройство.
+                Сохраните JSON-копию (обычную или с паролем) для переноса на
+                другое устройство.
               </p>
               <button
+                type="button"
                 className="button secondary full-width"
                 disabled={exportBusy}
-                onClick={() => exportFile(true)}
+                onClick={() => void exportFile(true)}
               >
                 <Download size={16} />
-                Сохранить резервную копию
+                Сохранить JSON-копию
               </button>
-              <button className="button ghost full-width" onClick={importFile}>
+              <button
+                type="button"
+                className="button secondary full-width"
+                disabled={exportBusy}
+                onClick={() => setModal({ type: "encrypt-export" })}
+              >
+                <LockKeyhole size={16} />
+                Зашифрованная копия (с паролем)
+              </button>
+              <button
+                type="button"
+                className="button ghost full-width"
+                onClick={() => void importFile()}
+              >
                 <Upload size={16} />
-                Восстановить из файла
+                Восстановить из JSON-файла
+              </button>
+              <button
+                type="button"
+                className="button ghost full-width"
+                onClick={() => void startCsvImport()}
+              >
+                <Upload size={16} />
+                Импорт операций из CSV
               </button>
             </div>
           </>
         );
         break;
-      case "start":
-        title = "Ваш finacc начинается здесь";
-        description =
-          "Демооперации, цели и напоминания будут убраны. Стандартные категории останутся.";
+      case "encrypt-export":
+        title = "Зашифрованная копия";
+        description = "Защитите резервную копию перед отправкой в облако.";
         content = (
-          <SubmitForm
-            label="Начать с чистого листа"
-            onSubmit={async () => {
-              await commit(() => emptyData());
-              setMonth(monthKey());
-              close();
+          <EncryptedExportForm
+            data={data}
+            onExportEncrypted={async (passphrase) => {
+              const json = await encryptBackup(data, passphrase);
+              const saved = await saveFile(
+                `finacc-encrypted-${dateKey()}.json`,
+                json,
+                "json",
+              );
+              if (saved) {
+                setToast({
+                  text: "Зашифрованная копия сохранена.",
+                  error: false,
+                });
+                close();
+              }
             }}
-          >
-            <p className="form-hint">
-              <Leaf size={20} />
-              После старта укажите начальный остаток в настройках и добавьте
-              первую операцию. Все данные сохраняются на вашем устройстве.
-            </p>
-          </SubmitForm>
+          />
+        );
+        break;
+      case "decrypt":
+        title = "Зашифрованная копия";
+        description = "Введите пароль для проверки и просмотра содержимого.";
+        content = (
+          <EncryptedRestoreForm
+            envelope={modal.envelope}
+            onDecrypted={(restored) =>
+              setModal({ type: "import", data: restored })
+            }
+          />
+        );
+        break;
+      case "csv-import":
+        title = "Импорт CSV";
+        description = "Проверьте количество найденных операций перед записью.";
+        content = (
+          <CsvImportForm
+            data={data}
+            parsed={modal.parsed}
+            commit={commit}
+            close={close}
+            onImported={(count) =>
+              setToast({
+                text: `Импортировано операций: ${count}.`,
+                error: false,
+              })
+            }
+          />
         );
         break;
       case "import": {
         const backup = modal.data;
         title = "Восстановить учет";
         description =
-          "Текущие данные будут полностью заменены содержимым файла. Сначала сохраните копию, если хотите их оставить.";
+          "Текущие данные будут полностью заменены содержимым файла.";
         content = (
           <SubmitForm
             label="Заменить данные"
@@ -1772,6 +1225,9 @@ export default function App() {
                 Операции<strong>{backup.transactions.length}</strong>
               </span>
               <span>
+                Счета<strong>{backup.accounts.length}</strong>
+              </span>
+              <span>
                 Цели и долги
                 <strong>{backup.savings.length + backup.debts.length}</strong>
               </span>
@@ -1783,7 +1239,7 @@ export default function App() {
               className="button secondary full-width"
               type="button"
               disabled={exportBusy}
-              onClick={() => exportFile(true)}
+              onClick={() => void exportFile(true)}
             >
               <Download size={16} />
               Сначала сохранить текущую копию
@@ -1800,46 +1256,44 @@ export default function App() {
         content = (
           <div className="help-content">
             <p>
-              finacc помогает вести личный учет в рублях без регистрации и
-              подключения банков.
+              finacc помогает вести личный учет локально, без регистрации и
+              передачи данных в облако.
             </p>
             <div>
               <Wallet size={21} />
               <span>
-                <strong>Записывайте как удобно</strong>Выбирайте категорию,
-                указывайте сумму и описание. Собственную категорию можно
-                добавить прямо при вводе.
+                <strong>Быстрый ввод и калькулятор</strong>Поле суммы понимает
+                арифметику (`450+180`, `1200/2`), а чеки можно добавлять через
+                QR-сканер ФНС или импорт CSV.
               </span>
             </div>
             <div>
               <Flag size={21} />
               <span>
-                <strong>Разделяйте расходы и планы</strong>Взносы в накопления и
-                выплаты долгов меняют доступный остаток, но не дублируют
-                повседневные доходы и расходы. Если денег не хватает, перерасход
-                учитывается как долг и погашается новыми поступлениями.
+                <strong>Счета, цели и долги</strong>Разделяйте карты и наличные,
+                откладывайте на цели и учитывайте как свои долги, так и деньги,
+                которые должны вам.
               </span>
             </div>
             <div>
               <ShieldCheck size={21} />
               <span>
-                <strong>Сохраняйте свою историю</strong>Данные находятся на
-                устройстве. Делайте JSON-копии в настройках; CSV-отчеты
-                открываются в электронных таблицах.
+                <strong>Приватность и резервные копии</strong>Можно включить
+                PIN-код и сохранять зашифрованные AES-GCM резервные копии.
               </span>
             </div>
             <div>
               <Bell size={21} />
               <span>
-                <strong>Помните о важном</strong>В Android можно включить
-                системные уведомления. Время доставки зависит от разрешений и
-                режима энергосбережения устройства.
+                <strong>Повторяющиеся напоминания</strong>Создавайте регулярные
+                счета и оплачивайте их в одно касание прямо из списка.
               </span>
             </div>
           </div>
         );
         break;
     }
+
     return (
       <Modal
         key={modal.type + ("entity" in modal ? (modal.entity?.id ?? "") : "")}
