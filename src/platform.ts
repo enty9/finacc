@@ -13,22 +13,26 @@ import {
   readTextFile,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
-import { readRecord, writeRecord } from "./storage.ts";
+import { deleteRecord, readRecord, writeRecord } from "./storage.ts";
 import {
+  currentPeriodMonth,
   decodeData,
   emptyData,
   insights,
   money,
-  monthKey,
   type Data,
 } from "./domain.ts";
+import type { PinLockRecord } from "./crypto.ts";
 
 export const native = isTauri();
 export const android = native && /Android/i.test(navigator.userAgent);
+
 let loading: Promise<Data> | undefined;
+
 export async function loadData(): Promise<Data> {
   return (loading ??= initializeData());
 }
+
 async function initializeData(): Promise<Data> {
   const saved = await readRecord("finances");
   let legacy = saved;
@@ -47,15 +51,57 @@ async function initializeData(): Promise<Data> {
     if (old !== null) legacy = JSON.parse(old);
   }
   let data = legacy === undefined ? emptyData() : decodeData(legacy);
-  if (!data.demo && saved !== undefined) return data;
+  const wasMigrated =
+    saved !== undefined &&
+    typeof saved === "object" &&
+    saved !== null &&
+    (saved as { version?: number }).version !== 2;
+  if (!data.demo && saved !== undefined && !wasMigrated) return data;
   if (data.demo) data = emptyData();
   await writeRecord("finances", data);
   return data;
 }
+
 export async function persistData(data: Data): Promise<void> {
-  decodeData(data);
-  await writeRecord("finances", data);
+  const validated = decodeData(data);
+  await writeRecord("finances", validated);
 }
+
+export async function loadPinLock(): Promise<PinLockRecord | null> {
+  const raw = await readRecord("app-lock");
+  if (
+    raw &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    typeof (raw as PinLockRecord).hash === "string" &&
+    typeof (raw as PinLockRecord).salt === "string"
+  ) {
+    return raw as PinLockRecord;
+  }
+  return null;
+}
+
+export async function savePinLock(record: PinLockRecord): Promise<void> {
+  await writeRecord("app-lock", record);
+}
+
+export async function clearPinLock(): Promise<void> {
+  await deleteRecord("app-lock");
+}
+
+export function hapticTap(): void {
+  try {
+    if (
+      typeof navigator !== "undefined" &&
+      typeof navigator.vibrate === "function"
+    ) {
+      navigator.vibrate(10);
+    }
+  } catch {
+    /* Ignore vibration permission restrictions on desktop browsers. */
+  }
+}
+
 export async function saveFile(
   name: string,
   content: string,
@@ -85,22 +131,28 @@ export async function saveFile(
   }
   return true;
 }
-export async function pickBackup(): Promise<Data | null> {
+
+async function pickTextFile(
+  filterName: string,
+  extensions: string[],
+  accept: string,
+  maxBytes: number,
+  tooBigMessage: string,
+): Promise<string | null> {
   if (native) {
     const path = await open({
       multiple: false,
-      filters: [{ name: "Резервная копия finacc", extensions: ["json"] }],
+      filters: [{ name: filterName, extensions }],
     });
     if (!path) return null;
     const raw = await readTextFile(path);
-    if (raw.length > 20_000_000)
-      throw new Error("Резервная копия должна быть не больше 20 МБ.");
-    return decodeData(JSON.parse(raw));
+    if (raw.length > maxBytes) throw new Error(tooBigMessage);
+    return raw;
   }
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".json,application/json";
+    input.accept = accept;
     input.oncancel = () => resolve(null);
     input.onchange = async () => {
       const file = input.files?.[0];
@@ -109,9 +161,8 @@ export async function pickBackup(): Promise<Data | null> {
         return;
       }
       try {
-        if (file.size > 20_000_000)
-          throw new Error("Резервная копия должна быть не больше 20 МБ.");
-        resolve(decodeData(JSON.parse(await file.text())));
+        if (file.size > maxBytes) throw new Error(tooBigMessage);
+        resolve(await file.text());
       } catch (error) {
         reject(error);
       }
@@ -119,6 +170,33 @@ export async function pickBackup(): Promise<Data | null> {
     input.click();
   });
 }
+
+export async function pickBackupRaw(): Promise<string | null> {
+  return pickTextFile(
+    "Резервная копия finacc",
+    ["json"],
+    ".json,application/json",
+    20_000_000,
+    "Резервная копия должна быть не больше 20 МБ.",
+  );
+}
+
+export async function pickCsvText(): Promise<string | null> {
+  return pickTextFile(
+    "CSV-выписка",
+    ["csv", "txt"],
+    ".csv,text/csv,text/plain",
+    10_000_000,
+    "CSV-файл должен быть не больше 10 МБ.",
+  );
+}
+
+export async function pickBackup(): Promise<Data | null> {
+  const raw = await pickBackupRaw();
+  if (raw === null) return null;
+  return decodeData(JSON.parse(raw));
+}
+
 export async function enableNotifications(): Promise<void> {
   if (!android)
     throw new Error(
@@ -130,12 +208,15 @@ export async function enableNotifications(): Promise<void> {
   )
     throw new Error("Разрешите уведомления для finacc в настройках Android.");
 }
+
 function notificationId(id: string): number {
   let hash = 0;
   for (const char of id) hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
   return hash & 0x7fffffff;
 }
+
 let notificationQueue = Promise.resolve();
+
 export function syncReminders(data: Data) {
   if (!android) return Promise.resolve();
   const task = notificationQueue
@@ -144,6 +225,7 @@ export function syncReminders(data: Data) {
   notificationQueue = task;
   return task;
 }
+
 async function scheduleReminders(data: Data) {
   const scheduled = await pending();
   if (scheduled.length) await cancel(scheduled.map((n) => n.id));
@@ -168,6 +250,7 @@ async function scheduleReminders(data: Data) {
       });
   }
 }
+
 export async function notifyBudget(before: Data, after: Data) {
   if (
     !android ||
@@ -176,12 +259,13 @@ export async function notifyBudget(before: Data, after: Data) {
     !(await isPermissionGranted())
   )
     return;
+  const currentPeriod = currentPeriodMonth(after.preferences.paydayDay);
   const prior = new Set(
-    insights(before, monthKey())
+    insights(before, currentPeriod)
       .filter((i) => i.severity === "warning")
       .map((i) => i.title),
   );
-  for (const alert of insights(after, monthKey()).filter(
+  for (const alert of insights(after, currentPeriod).filter(
     (i) => i.id.startsWith("limit-") && !prior.has(i.title),
   ))
     await invoke<void>("plugin:notification|notify", {

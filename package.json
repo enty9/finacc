@@ -10,6 +10,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
+    "test": "node --test tests/*.test.ts",
     "tauri": "tauri",
     "android:dev": "tauri android dev",
     "preandroid:build": "tauri icon public/favicon.svg --ios-color '#060a12'",
