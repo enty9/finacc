@@ -1,0 +1,137 @@
+@import url("/fonts/fonts.css");
+
+:root,
+[data-theme="glass"] {
+  font-family: "Open Sans", "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark;
+  font-synthesis: none;
+  font-weight: 450;
+  font-size: 14px;
+
+  --background: #050914;
+  --surface: #0b1324;
+  --surface-raised: #13203a;
+  --surface-soft: rgba(96, 165, 250, 0.11);
+  --surface-hover: rgba(148, 183, 235, 0.14);
+
+  --text: #edf3ff;
+  --muted: #9eb0cf;
+  --accent: #60a5fa;
+  --accent-soft: #aacbff;
+  --income: #34d399;
+  --income-bg: rgba(52, 211, 153, 0.13);
+  --expense: #fb7185;
+  --expense-bg: rgba(251, 113, 133, 0.13);
+  --warning: #fbbf24;
+  --warning-bg: rgba(251, 191, 36, 0.12);
+  --danger: #fda4af;
+  --danger-bg: rgba(251, 113, 133, 0.15);
+  --receivable: #a78bfa;
+  --receivable-bg: rgba(167, 139, 250, 0.15);
+
+  --line: rgba(186, 214, 255, 0.13);
+  --line-strong: rgba(255, 255, 255, 0.22);
+
+  --glass-floating: rgba(11, 18, 34, 0.68);
+  --glass-blur: blur(20px) saturate(165%);
+  --glass-surface: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.085),
+    rgba(15, 26, 48, 0.64) 48%,
+    rgba(8, 14, 29, 0.82)
+  );
+  --balance-bg:
+    radial-gradient(ellipse at 92% -12%, rgba(52, 211, 153, 0.24), transparent 52%),
+    radial-gradient(ellipse at 8% 110%, rgba(96, 165, 250, 0.28), transparent 58%),
+    linear-gradient(132deg, rgba(22, 56, 114, 0.78), rgba(10, 20, 42, 0.88));
+  --specular:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --shadow: 0 12px 32px rgba(2, 6, 18, 0.42);
+  --shell-bg:
+    radial-gradient(ellipse 68% 44% at 88% 4%, rgba(37, 99, 235, 0.26), transparent 62%),
+    radial-gradient(ellipse 52% 45% at 14% 28%, rgba(56, 189, 248, 0.14), transparent 64%),
+    radial-gradient(ellipse 55% 42% at 75% 84%, rgba(16, 185, 129, 0.12), transparent 64%),
+    #050914;
+  --backdrop-color: rgba(2, 6, 16, 0.72);
+  --input-bg: rgba(8, 14, 28, 0.75);
+}
+
+[data-theme="oled"] {
+  color-scheme: dark;
+  --background: #000000;
+  --surface: #0a0e17;
+  --surface-raised: #111827;
+  --surface-soft: rgba(96, 165, 250, 0.1);
+  --surface-hover: rgba(148, 183, 235, 0.14);
+
+  --text: #f3f7ff;
+  --muted: #98a9c6;
+  --line: rgba(148, 183, 235, 0.15);
+  --line-strong: rgba(148, 183, 235, 0.24);
+
+  --glass-floating: rgba(10, 14, 23, 0.96);
+  --glass-blur: none;
+  --glass-surface: #0a0e17;
+  --balance-bg: linear-gradient(135deg, #0d1d3a, #060912);
+  --specular: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shell-bg: #000000;
+  --backdrop-color: rgba(0, 0, 0, 0.82);
+  --input-bg: #050810;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --background: #eef4fc;
+  --surface: rgba(255, 255, 255, 0.9);
+  --surface-raised: rgba(255, 255, 255, 0.98);
+  --surface-soft: rgba(37, 99, 235, 0.08);
+  --surface-hover: rgba(37, 99, 235, 0.13);
+
+  --text: #0f172a;
+  --muted: #475569;
+  --accent: #2563eb;
+  --accent-soft: #1d4ed8;
+  --income: #059669;
+  --income-bg: rgba(5, 150, 105, 0.11);
+  --expense: #e11d48;
+  --expense-bg: rgba(225, 29, 72, 0.1);
+  --warning: #d97706;
+  --warning-bg: rgba(217, 119, 6, 0.11);
+  --danger: #dc2626;
+  --danger-bg: rgba(220, 38, 38, 0.1);
+  --receivable: #7c3aed;
+  --receivable-bg: rgba(124, 58, 237, 0.11);
+
+  --line: rgba(15, 23, 42, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.95);
+
+  --glass-floating: rgba(255, 255, 255, 0.78);
+  --glass-blur: blur(20px) saturate(165%);
+  --glass-surface: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.92),
+    rgba(241, 246, 255, 0.76)
+  );
+  --balance-bg:
+    radial-gradient(ellipse at 92% -10%, rgba(16, 185, 129, 0.18), transparent 52%),
+    radial-gradient(ellipse at 10% 110%, rgba(37, 99, 235, 0.18), transparent 55%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(226, 238, 255, 0.85));
+  --specular:
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+  --shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+  --shell-bg:
+    radial-gradient(ellipse 65% 45% at 88% 4%, rgba(96, 165, 250, 0.25), transparent 62%),
+    radial-gradient(ellipse 50% 45% at 15% 30%, rgba(167, 139, 250, 0.16), transparent 64%),
+    radial-gradient(ellipse 55% 40% at 75% 85%, rgba(52, 211, 153, 0.14), transparent 62%),
+    #eef4fc;
+  --backdrop-color: rgba(15, 23, 42, 0.38);
+  --input-bg: rgba(255, 255, 255, 0.88);
+}
+
+:root {
+  color: var(--text);
+  background: var(--background);
+}
