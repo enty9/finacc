@@ -1,7 +1,7 @@
 {
   "name": "finacc",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "engines": {
     "node": ">=22.18.0"
@@ -11,9 +11,11 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --test tests/*.test.ts",
+    "version:sync": "node scripts/sync-version.mjs",
     "tauri": "tauri",
     "android:dev": "tauri android dev",
-    "preandroid:build": "tauri icon public/favicon.svg --ios-color '#060a12'",
+    "android:patch": "node scripts/patch-android.mjs",
+    "preandroid:build": "tauri icon public/favicon.svg --ios-color '#050914' && node scripts/patch-android.mjs",
     "android:build": "tauri android build --apk"
   },
   "dependencies": {
