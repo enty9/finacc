@@ -67,6 +67,7 @@ export function OverviewPage({
   onTransferGoal,
   onShowAllInsights,
   renderReminderRow,
+  aiBanner,
 }: {
   data: Data;
   month: string;
@@ -96,6 +97,7 @@ export function OverviewPage({
   onTransferGoal: (goal: Saving) => void;
   onShowAllInsights: (page: Page) => void;
   renderReminderRow: (r: Reminder, compact?: boolean) => React.ReactNode;
+  aiBanner?: React.ReactNode;
 }) {
   const formatDual = useMoney();
   const activeAccounts = data.accounts.filter((a) => !a.archived);
@@ -274,6 +276,8 @@ export function OverviewPage({
           )}
         </div>
       </div>
+
+      {aiBanner}
 
       <div className="wealth-strip glass-surface">
         <button

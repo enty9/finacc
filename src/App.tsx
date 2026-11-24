@@ -24,6 +24,7 @@ import {
   Plus,
   Settings2,
   ShieldCheck,
+  Sparkles,
   Target,
   Upload,
   Wallet,
@@ -103,6 +104,30 @@ import {
   syncReminders,
 } from "./platform";
 import { checkForUpdate, type AppUpdate } from "./updates";
+import {
+  cancelAiInstall,
+  deleteAiModel,
+  getAiStatus,
+  installAiModel,
+  loadAiHistory,
+  saveAiHistory,
+  sendAiChat,
+  stopAiChat,
+  subscribeAiChat,
+  subscribeAiDownload,
+  unloadAiModel,
+  type AiChatMessage,
+  type AiDownloadProgress,
+  type AiStatus,
+} from "./ai";
+import { buildFinancialContext, buildSystemPrompt } from "./aiContext";
+import {
+  AiChatOverlay,
+  AiInstallProgressBar,
+  AiOptInCard,
+  AiSettingsSection,
+} from "./components/AiAssistant";
+import type { AiChoice, AiModelId } from "./domain";
 
 type ModalState =
   | { type: "transaction"; transaction?: Transaction; draft?: TransactionDraft }
@@ -209,14 +234,23 @@ export default function App() {
   const [annual, setAnnual] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [update, setUpdate] = useState<AppUpdate | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [aiProgress, setAiProgress] = useState<AiDownloadProgress | null>(null);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiMessages, setAiMessages] = useState<AiChatMessage[]>([]);
+  const [aiStreamingText, setAiStreamingText] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
 
   const modalRef = useRef<ModalState | null>(null);
   const pageRef = useRef<Page>("overview");
+  const aiOpenRef = useRef(false);
+  const aiRequestIdRef = useRef<string | null>(null);
   const suppressNextPopRef = useRef(false);
   const initFlagsDoneRef = useRef(false);
 
   modalRef.current = modal;
   pageRef.current = page;
+  aiOpenRef.current = aiOpen;
 
   const showError = useCallback(
     (error: unknown) => setToast({ text: errorMessage(error), error: true }),
@@ -233,6 +267,22 @@ export default function App() {
   const close = useCallback(() => {
     setModal(null);
     if (window.history.state?.finaccModal) {
+      suppressNextPopRef.current = true;
+      window.history.back();
+    }
+  }, []);
+
+  const openAiChat = useCallback(() => {
+    hapticTap();
+    if (!window.history.state?.finaccAi) {
+      window.history.pushState({ finaccAi: true }, "");
+    }
+    setAiOpen(true);
+  }, []);
+
+  const closeAiChat = useCallback(() => {
+    setAiOpen(false);
+    if (window.history.state?.finaccAi) {
       suppressNextPopRef.current = true;
       window.history.back();
     }
@@ -260,6 +310,10 @@ export default function App() {
     const onPopState = () => {
       if (suppressNextPopRef.current) {
         suppressNextPopRef.current = false;
+        return;
+      }
+      if (aiOpenRef.current) {
+        setAiOpen(false);
         return;
       }
       if (modalRef.current !== null) {
@@ -355,6 +409,218 @@ export default function App() {
     },
     [showError],
   );
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([getAiStatus(), loadAiHistory()])
+      .then(([status, history]) => {
+        if (!active) return;
+        setAiStatus(status);
+        setAiMessages(history);
+      })
+      .catch(() => {
+        /* Non-blocking AI status probe */
+      });
+
+    let cleanupDownload: (() => void) | undefined;
+    let cleanupChat: (() => void) | undefined;
+
+    void subscribeAiDownload({
+      onProgress: (payload) => {
+        if (active) setAiProgress(payload);
+      },
+      onDone: () => {
+        if (!active) return;
+        setAiProgress(null);
+        void getAiStatus().then((status) => {
+          if (active) setAiStatus(status);
+        });
+        setToast({
+          text: "Локальный ИИ установлен — кнопка ✨ появилась в верхнем углу.",
+          error: false,
+        });
+      },
+      onError: (payload) => {
+        if (!active) return;
+        setAiProgress(null);
+        void getAiStatus().then((status) => {
+          if (active) setAiStatus(status);
+        });
+        setToast({ text: payload.error, error: true });
+      },
+    }).then((unlisten) => {
+      if (active) cleanupDownload = unlisten;
+      else unlisten();
+    });
+
+    void subscribeAiChat({
+      onToken: (payload) => {
+        if (!active || aiRequestIdRef.current !== payload.requestId) return;
+        setAiStreamingText((prev) => prev + payload.token);
+      },
+    }).then((unlisten) => {
+      if (active) cleanupChat = unlisten;
+      else unlisten();
+    });
+
+    return () => {
+      active = false;
+      cleanupDownload?.();
+      cleanupChat?.();
+    };
+  }, []);
+
+  const commitAiPrefs = useCallback(
+    async (
+      patch: Partial<{
+        choice: AiChoice;
+        modelId: AiModelId;
+        includeContext: boolean;
+      }>,
+    ) => {
+      await commit((current) => ({
+        ...current,
+        preferences: {
+          ...current.preferences,
+          ai: {
+            ...current.preferences.ai,
+            ...patch,
+          },
+        },
+      }));
+    },
+    [commit],
+  );
+
+  const handleInstallAi = useCallback(
+    async (modelId: AiModelId) => {
+      await commitAiPrefs({ choice: "enabled", modelId });
+      const nextStatus = await installAiModel(modelId);
+      setAiStatus(nextStatus);
+      setToast({
+        text: "Загружаем локальную модель ИИ…",
+        error: false,
+      });
+    },
+    [commitAiPrefs],
+  );
+
+  const handleCancelAiInstall = useCallback(async () => {
+    await cancelAiInstall();
+    setAiProgress(null);
+    const nextStatus = await getAiStatus();
+    setAiStatus(nextStatus);
+  }, []);
+
+  const handleDeleteAiModel = useCallback(
+    async (modelId: AiModelId) => {
+      const nextStatus = await deleteAiModel(modelId);
+      setAiStatus(nextStatus);
+      if (dataRef.current?.preferences.ai.modelId === modelId) {
+        setAiOpen(false);
+      }
+      if (!nextStatus.models.some((m) => m.installed)) {
+        await commitAiPrefs({ choice: "disabled" });
+      }
+      setToast({ text: "Файлы модели ИИ удалены.", error: false });
+    },
+    [commitAiPrefs],
+  );
+
+  const handleUnloadAiModel = useCallback(async () => {
+    await unloadAiModel();
+    const nextStatus = await getAiStatus();
+    setAiStatus(nextStatus);
+    setToast({ text: "Модель выгружена из оперативной памяти.", error: false });
+  }, []);
+
+  const handleSetAiChoice = useCallback(
+    async (choice: AiChoice) => {
+      await commitAiPrefs({ choice });
+      if (choice === "disabled") {
+        setAiOpen(false);
+        setToast({
+          text: "ИИ-помощник скрыт. Включить можно в Настройках.",
+          error: false,
+        });
+      }
+    },
+    [commitAiPrefs],
+  );
+
+  const handleSendAi = useCallback(
+    async (text: string) => {
+      const currentData = dataRef.current;
+      if (!currentData) return;
+
+      const userMsg: AiChatMessage = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        role: "user",
+        content: text,
+        createdAt: Date.now(),
+      };
+      const nextHistory = [...aiMessages, userMsg];
+      setAiMessages(nextHistory);
+      void saveAiHistory(nextHistory);
+
+      const reqId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      aiRequestIdRef.current = reqId;
+      setAiStreamingText("");
+      setAiGenerating(true);
+
+      try {
+        const ctxText = currentData.preferences.ai.includeContext
+          ? buildFinancialContext(currentData, month)
+          : null;
+        const done = await sendAiChat({
+          modelId: currentData.preferences.ai.modelId,
+          systemPrompt: buildSystemPrompt(ctxText),
+          messages: nextHistory
+            .filter((m) => !m.error)
+            .slice(-12)
+            .map((m) => ({ role: m.role, content: m.content })),
+          requestId: reqId,
+        });
+
+        const assistantMsg: AiChatMessage = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: "assistant",
+          content:
+            done.fullText.trim() ||
+            (done.aborted
+              ? "Ответ остановлен."
+              : "Модель не вернула текст. Попробуйте переформулировать вопрос."),
+          createdAt: Date.now(),
+          aborted: done.aborted,
+        };
+        setAiMessages((prev) => {
+          const updated = [...prev, assistantMsg];
+          void saveAiHistory(updated);
+          return updated;
+        });
+        void getAiStatus().then(setAiStatus).catch(() => {});
+      } catch (e) {
+        const errMsg: AiChatMessage = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: "assistant",
+          content: "Не удалось получить ответ от локальной модели.",
+          error: errorMessage(e),
+          createdAt: Date.now(),
+        };
+        setAiMessages((prev) => [...prev, errMsg]);
+      } finally {
+        aiRequestIdRef.current = null;
+        setAiStreamingText("");
+        setAiGenerating(false);
+      }
+    },
+    [aiMessages, month],
+  );
+
+  const handleClearAiHistory = useCallback(async () => {
+    setAiMessages([]);
+    await saveAiHistory([]);
+  }, []);
 
   const period = annual && page === "reports" ? month.slice(0, 4) : month;
   const selected = useMemo(
@@ -536,6 +802,43 @@ export default function App() {
     </div>
   );
 
+  const aiPrefs = data.preferences.ai;
+  const aiReady = Boolean(
+    aiStatus?.supported &&
+      aiPrefs.choice === "enabled" &&
+      aiStatus.models.some((m) => m.id === aiPrefs.modelId && m.installed),
+  );
+  const overviewAiBanner = aiStatus?.supported ? (
+    aiStatus.downloadingModelId ? (
+      <AiInstallProgressBar
+        status={aiStatus}
+        progress={aiProgress}
+        onCancel={() => handleCancelAiInstall().catch(showError)}
+      />
+    ) : (
+      <AiOptInCard
+        status={aiStatus}
+        choice={aiPrefs.choice}
+        selectedModelId={aiPrefs.modelId}
+        onSelectModel={async () => {}}
+        onInstall={async (modelId) => {
+          try {
+            await handleInstallAi(modelId);
+          } catch (e) {
+            showError(e);
+          }
+        }}
+        onDismiss={async () => {
+          try {
+            await handleSetAiChoice("disabled");
+          } catch (e) {
+            showError(e);
+          }
+        }}
+      />
+    )
+  ) : null;
+
   return (
     <div className="app-shell">
       <aside className="sidebar glass-floating">
@@ -612,6 +915,17 @@ export default function App() {
               <LockKeyhole size={13} />
               Только на вашем устройстве
             </span>
+            {aiReady && (
+              <button
+                type="button"
+                className={`icon-button ai-trigger-btn ${aiOpen ? "active" : ""}`}
+                aria-label="Финансовый ИИ-помощник"
+                title="ИИ-помощник"
+                onClick={() => (aiOpen ? closeAiChat() : openAiChat())}
+              >
+                <Sparkles size={19} strokeWidth={1.75} />
+              </button>
+            )}
             {pinLock && (
               <button
                 type="button"
@@ -790,6 +1104,7 @@ export default function App() {
             }
             onShowAllInsights={(targetPage) => navigate(targetPage)}
             renderReminderRow={renderReminderCompact}
+            aiBanner={overviewAiBanner}
           />
         )}
 
@@ -956,6 +1271,25 @@ export default function App() {
       )}
 
       {modal && renderModal()}
+
+      {aiOpen && aiReady && aiStatus && (
+        <AiChatOverlay
+          data={data}
+          month={month}
+          page={page}
+          status={aiStatus}
+          messages={aiMessages}
+          streamingText={aiStreamingText}
+          generating={aiGenerating}
+          onSend={handleSendAi}
+          onStop={() => stopAiChat().catch(showError)}
+          onClear={() => handleClearAiHistory().catch(showError)}
+          onToggleContext={(includeContext) =>
+            commitAiPrefs({ includeContext }).catch(showError)
+          }
+          onClose={closeAiChat}
+        />
+      )}
     </div>
   );
 
@@ -1108,6 +1442,29 @@ export default function App() {
                 setPinLock(null);
               }}
               onManageCategories={() => setModal({ type: "categories" })}
+            />
+            <AiSettingsSection
+              status={aiStatus}
+              progress={aiProgress}
+              choice={aiPrefs.choice}
+              selectedModelId={aiPrefs.modelId}
+              onSelectModel={(modelId) => commitAiPrefs({ modelId })}
+              onInstall={handleInstallAi}
+              onCancelInstall={handleCancelAiInstall}
+              onUnloadModel={handleUnloadAiModel}
+              onDeleteModel={handleDeleteAiModel}
+              onSetChoice={handleSetAiChoice}
+              onOpenChat={() => {
+                hapticTap();
+                if (window.history.state?.finaccModal) {
+                  window.history.replaceState({ finaccAi: true }, "");
+                  setModal(null);
+                  setAiOpen(true);
+                } else {
+                  setModal(null);
+                  openAiChat();
+                }
+              }}
             />
             <div className="settings-backup">
               <h3>Резервные копии и импорт</h3>
@@ -1287,6 +1644,14 @@ export default function App() {
               <span>
                 <strong>Повторяющиеся напоминания</strong>Создавайте регулярные
                 счета и оплачивайте их в одно касание прямо из списка.
+              </span>
+            </div>
+            <div>
+              <Sparkles size={21} />
+              <span>
+                <strong>Локальный ИИ-помощник</strong>При желании установите
+                модель Qwen2.5 на устройство — кнопка ✨ в углу открывает чат по
+                бюджету и накоплениям без передачи данных в облако.
               </span>
             </div>
           </div>
