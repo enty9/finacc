@@ -21,6 +21,12 @@ if (existsSync(mainActivityPath)) {
       "import android.graphics.Color\nimport android.os.Bundle\n",
     );
   }
+  if (!kt.includes("import android.webkit.WebView")) {
+    kt = kt.replace(
+      "import android.os.Bundle\n",
+      "import android.os.Bundle\nimport android.webkit.WebView\n",
+    );
+  }
   if (!kt.includes("import androidx.activity.SystemBarStyle")) {
     kt = kt.replace(
       "import androidx.activity.enableEdgeToEdge\n",
@@ -31,6 +37,12 @@ if (existsSync(mainActivityPath)) {
     kt = kt.replace(
       "    enableEdgeToEdge()",
       `    enableEdgeToEdge(\n      statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),\n      navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),\n    )`,
+    );
+  }
+  if (!kt.includes("override fun onWebViewCreate")) {
+    kt = kt.replace(
+      /\n\}\s*$/,
+      `\n\n  override fun onWebViewCreate(webView: WebView) {\n    super.onWebViewCreate(webView)\n    webView.settings.setSupportZoom(false)\n    webView.settings.builtInZoomControls = false\n    webView.settings.displayZoomControls = false\n  }\n}\n`,
     );
   }
   writeFileSync(mainActivityPath, kt);

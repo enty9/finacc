@@ -651,6 +651,9 @@ button.wealth-strip-item:hover {
 .transaction-row {
   display: flex;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   align-items: center;
   gap: 12px;
   text-align: left;
@@ -1024,7 +1027,7 @@ button.wealth-strip-item:hover {
 
 .two-metrics {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 18px;
 }
@@ -1035,6 +1038,8 @@ button.wealth-strip-item:hover {
   align-items: center;
   gap: 14px;
   padding: 20px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .mini-metric > .flow-icon,
@@ -1046,6 +1051,8 @@ button.wealth-strip-item:hover {
 .mini-metric > span:last-child {
   font-size: 11px;
   color: var(--muted);
+  min-width: 0;
+  flex: 1;
 }
 
 .mini-metric strong {
@@ -2109,9 +2116,13 @@ button.wealth-strip-item:hover {
 }
 
 @media (max-width: 760px) {
+  .card {
+    padding: 16px 14px;
+    max-width: 100%;
+  }
   .overview-grid,
   .report-metrics {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
   }
   .balance-card,
@@ -2129,6 +2140,66 @@ button.wealth-strip-item:hover {
   }
   .sparkline {
     display: none;
+  }
+  .two-metrics {
+    gap: 10px;
+  }
+  .mini-metric {
+    padding: 14px 12px;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .mini-metric > .flow-icon,
+  .mini-metric > .wealth-icon {
+    width: 32px;
+    height: 32px;
+  }
+  .mini-metric strong {
+    font-size: 17px;
+  }
+  .section-toolbar {
+    gap: 10px;
+  }
+  .section-toolbar > .segmented {
+    width: 100%;
+  }
+  .section-toolbar > .chip-row {
+    width: 100%;
+  }
+  .section-toolbar > .chip-row > .button {
+    flex: 1;
+  }
+  .segmented button {
+    padding: 8px 8px;
+    font-size: 12px;
+    min-width: 0;
+    gap: 4px;
+  }
+  .filters {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .search-input {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+  }
+  .operation-filter {
+    width: 100%;
+    max-width: 100%;
+  }
+  .category-filter {
+    width: 100%;
+    min-width: 0;
+  }
+  .category-filter select {
+    width: 100%;
+    max-width: 100%;
+  }
+  .chip {
+    max-width: 100%;
   }
   .safe-spend-card {
     flex-direction: column;
@@ -2163,6 +2234,14 @@ button.wealth-strip-item:hover {
   .budget-summary-progress {
     width: 100%;
   }
+  .transaction-row {
+    gap: 10px;
+    padding: 10px 2px;
+  }
+  .category-icon {
+    width: 36px;
+    height: 36px;
+  }
   .transaction-date,
   .row-edit {
     display: none;
@@ -2172,14 +2251,24 @@ button.wealth-strip-item:hover {
     display: inline;
   }
   .transaction-amount {
-    min-width: 82px;
+    min-width: 0;
+    flex-shrink: 0;
+    font-size: 12px;
+  }
+  .transaction-amount .money-pair > .money-usd {
+    font-size: 10px;
+  }
+  .reminder-page-list .reminder-row {
+    flex-wrap: wrap;
   }
   .exchange-rate .rate-frequency {
     display: none;
   }
-  .form input,
-  .form select,
-  .form textarea {
+  input,
+  select,
+  textarea,
+  .search-input input,
+  .category-filter select {
     font-size: 16px;
   }
   .two-fields {

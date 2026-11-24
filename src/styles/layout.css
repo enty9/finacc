@@ -1,5 +1,7 @@
 .app-shell {
   min-height: 100vh;
+  max-width: 100%;
+  overflow-x: clip;
   isolation: isolate;
   background: var(--shell-bg);
 }
@@ -191,6 +193,7 @@
   margin-left: 248px;
   padding: 0 40px 28px;
   max-width: 1720px;
+  overflow-x: clip;
 }
 
 .topbar {
@@ -475,6 +478,7 @@
   }
   .main-content {
     margin-left: 0;
+    max-width: 100%;
     padding: env(safe-area-inset-top, 0px) 16px
       calc(96px + env(safe-area-inset-bottom, 0px));
   }
@@ -516,13 +520,27 @@
   .add-operation {
     display: none;
   }
+  .period-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
   .period-caption {
     display: none;
   }
   .period-selector {
     height: 42px;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .month-input-label {
+    min-width: 0;
+    flex: 1;
+    padding: 0 4px;
   }
   .export-link {
+    margin-left: 0;
+    padding: 8px 6px;
     min-height: 42px;
     font-size: 12px;
   }
