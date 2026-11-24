@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import {
   formatBytesRu,
+  isBackgroundDownloadSupported,
   type AiChatMessage,
   type AiDownloadProgress,
   type AiStatus,
@@ -56,6 +57,7 @@ export function AiInstallProgressBar({
   const percent = Math.max(0, Math.min(100, progress?.percent ?? 0));
   const totalBytes = progress?.totalBytes || model?.approxBytes || 0;
   const downloadedBytes = progress?.downloadedBytes ?? 0;
+  const bgSupported = isBackgroundDownloadSupported();
 
   return (
     <div
@@ -69,8 +71,8 @@ export function AiInstallProgressBar({
           <div>
             <strong>Установка {model?.name ?? activeId}</strong>
             <small>
-              {downloadStageLabel(progress?.stage ?? "weights")}{" "}
-              {percent > 0 ? `(${Math.round(percent)}%)` : ""}
+              {downloadStageLabel(progress?.stage ?? "weights")}
+              {percent > 0 ? ` · ${Math.round(percent)}%` : ""}
             </small>
           </div>
         </div>
@@ -98,7 +100,9 @@ export function AiInstallProgressBar({
           {formatBytesRu(downloadedBytes)} из {formatBytesRu(totalBytes)}
         </span>
         <span>
-          Можно свернуть приложение или погасить экран — загрузка продолжится в фоне
+          {bgSupported
+            ? "Загрузка идёт в фоне — можно свернуть приложение или выключить экран"
+            : "После установки вверху появится кнопка ✨"}
         </span>
       </div>
     </div>

@@ -16,7 +16,10 @@
     "android:dev": "tauri android dev",
     "android:patch": "node scripts/patch-android.mjs",
     "preandroid:build": "tauri icon public/favicon.svg --ios-color '#050914' && node scripts/patch-android.mjs",
-    "android:build": "tauri android build --apk"
+    "android:build": "tauri android build --apk",
+    "ios:init": "tauri ios init",
+    "ios:dev": "tauri ios dev",
+    "ios:build": "tauri ios build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

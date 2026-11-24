@@ -1,0 +1,87 @@
+name: Build iOS Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install Rust iOS target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Generate iOS icons and initialize Xcode project
+        run: |
+          npx tauri icon public/favicon.svg --ios-color '#050914'
+          npx tauri ios init --ci
+
+      - name: Build unsigned iOS app bundle
+        working-directory: src-tauri/gen/apple
+        run: |
+          set -euo pipefail
+          PROJECT_PATH=$(find . -maxdepth 1 -name "*.xcodeproj" | head -n 1)
+          WORKSPACE_PATH=$(find . -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+          if [ -n "$WORKSPACE_PATH" ]; then
+            TARGET_FLAGS=(-workspace "$WORKSPACE_PATH")
+            LIST_OUT=$(xcodebuild -list -workspace "$WORKSPACE_PATH")
+          else
+            TARGET_FLAGS=(-project "$PROJECT_PATH")
+            LIST_OUT=$(xcodebuild -list -project "$PROJECT_PATH")
+          fi
+
+          SCHEME=$(printf "%s\n" "$LIST_OUT" | awk '/Schemes:/{flag=1; next} flag && NF {gsub(/^[ \t]+|[ \t]+$/, ""); print; exit}')
+          CONFIG="release"
+          if printf "%s\n" "$LIST_OUT" | grep -qxE '[[:space:]]*Release'; then
+            CONFIG="Release"
+          fi
+
+          xcodebuild "${TARGET_FLAGS[@]}" \
+            -scheme "$SCHEME" \
+            -sdk iphoneos \
+            -configuration "$CONFIG" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build
+
+      - name: Package unsigned IPA
+        working-directory: src-tauri/gen/apple
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find build/DerivedData/Build/Products -maxdepth 3 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Built .app bundle not found"
+            exit 1
+          fi
+          rm -rf Payload ../../../finacc-ios-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r -y ../../../finacc-ios-unsigned.ipa Payload
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: finacc-ios-unsigned-ipa
+          path: finacc-ios-unsigned.ipa

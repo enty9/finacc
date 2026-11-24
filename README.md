@@ -47,6 +47,19 @@ npm run android:build -- --debug --target aarch64
 
 Отладочный APK появится в `src-tauri/gen/android/app/build/outputs/apk/`. Для синхронизации номера версии во всех манифестах используйте `npm run version:sync -- <X.Y.Z>`.
 
+## iOS
+
+Сборка `.ipa` требует macOS и Xcode (на Linux iOS-таргет Apple недоступен). В репозитории настроены `src-tauri/tauri.conf.json` (`bundle.iOS.minimumSystemVersion: "15.0"`), [Info.ios.plist](src-tauri/Info.ios.plist) и GitHub Actions workflow [ios-build.yml](.github/workflows/ios-build.yml) для облачной сборки неподписанного `.ipa` на раннере `macos-latest` (запуск вручную во вкладке **Actions → Build iOS Unsigned IPA**).
+
+Для локальной сборки на Mac:
+
+```bash
+rustup target add aarch64-apple-ios
+brew install xcodegen
+npm run ios:init
+npm run ios:build
+```
+
 ## Данные и расчеты
 
 - Все денежные значения хранятся целым числом копеек; поддерживается рубль. Максимальная отдельная сумма — 1 млрд ₽.
