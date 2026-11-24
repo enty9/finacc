@@ -27,10 +27,36 @@ export interface AiStatus {
 
 export interface AiDownloadProgress {
   modelId: AiModelId;
-  stage: "tokenizer" | "weights" | "verifying";
+  stage: "tokenizer" | "weights" | "verifying" | "waiting";
   downloadedBytes: number;
   totalBytes: number;
   percent: number;
+}
+
+export interface AiBgStateSnapshot {
+  modelId: AiModelId | null;
+  status: "idle" | "downloading" | "done" | "error" | "canceled";
+  stage: "tokenizer" | "weights" | "verifying" | "waiting";
+  downloadedBytes: number;
+  totalBytes: number;
+  percent: number;
+  error: string | null;
+  active: boolean;
+}
+
+interface NativeAiDownloaderBridge {
+  isAvailable(): boolean;
+  startDownload(modelId: string): string;
+  cancelDownload(): void;
+  getStateJson(): string;
+  resumePendingIfNeeded(): void;
+}
+
+declare global {
+  interface Window {
+    FinaccAiDownloader?: NativeAiDownloaderBridge;
+    __finaccAiBgEvent?: (snapshot: AiBgStateSnapshot) => void;
+  }
 }
 
 export interface AiChatMessage {
@@ -105,21 +131,123 @@ export function formatBytesRu(bytes: number): string {
   return `${mb} МБ`;
 }
 
+const VALID_STAGES = new Set(["tokenizer", "weights", "verifying", "waiting"]);
+const VALID_MODELS = new Set(["qwen2.5-3b", "qwen2.5-1.5b"]);
+
+function normalizeStage(
+  raw: string | undefined,
+): AiDownloadProgress["stage"] {
+  if (raw && VALID_STAGES.has(raw)) {
+    return raw as AiDownloadProgress["stage"];
+  }
+  return "weights";
+}
+
+function normalizeModelId(raw: string | null | undefined): AiModelId | null {
+  if (raw && VALID_MODELS.has(raw)) {
+    return raw as AiModelId;
+  }
+  return null;
+}
+
+export function isBackgroundDownloadSupported(): boolean {
+  try {
+    return Boolean(window.FinaccAiDownloader?.isAvailable?.());
+  } catch {
+    return false;
+  }
+}
+
+export function getBackgroundDownloadState(): AiBgStateSnapshot | null {
+  if (!isBackgroundDownloadSupported()) return null;
+  try {
+    const rawJson = window.FinaccAiDownloader!.getStateJson();
+    if (!rawJson) return null;
+    const parsed = JSON.parse(rawJson) as Record<string, unknown>;
+    const statusRaw = String(parsed.status ?? "idle");
+    const status =
+      statusRaw === "downloading" ||
+      statusRaw === "done" ||
+      statusRaw === "error" ||
+      statusRaw === "canceled"
+        ? statusRaw
+        : "idle";
+    return {
+      modelId: normalizeModelId(
+        typeof parsed.modelId === "string" ? parsed.modelId : null,
+      ),
+      status,
+      stage: normalizeStage(
+        typeof parsed.stage === "string" ? parsed.stage : undefined,
+      ),
+      downloadedBytes: Number(parsed.downloadedBytes) || 0,
+      totalBytes: Number(parsed.totalBytes) || 0,
+      percent: Number(parsed.percent) || 0,
+      error: typeof parsed.error === "string" ? parsed.error : null,
+      active: Boolean(parsed.active),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function getBackgroundDownloadProgress(): AiDownloadProgress | null {
+  const bg = getBackgroundDownloadState();
+  if (!bg || !bg.active || !bg.modelId) return null;
+  return {
+    modelId: bg.modelId,
+    stage: bg.stage,
+    downloadedBytes: bg.downloadedBytes,
+    totalBytes: bg.totalBytes,
+    percent: bg.percent,
+  };
+}
+
+export function resumePendingBackgroundDownload(): void {
+  if (!isBackgroundDownloadSupported()) return;
+  try {
+    window.FinaccAiDownloader?.resumePendingIfNeeded();
+  } catch {
+    // Non-critical foreground handoff
+  }
+}
+
 export async function getAiStatus(): Promise<AiStatus> {
   if (!isTauri()) return unsupportedAiStatus();
-  return invoke<AiStatus>("ai_status");
+  const base = await invoke<AiStatus>("ai_status");
+  const bg = getBackgroundDownloadState();
+  if (
+    bg &&
+    bg.active &&
+    bg.modelId &&
+    !base.models.some((m) => m.id === bg.modelId && m.installed)
+  ) {
+    base.downloadingModelId = bg.modelId;
+  }
+  return base;
 }
 
 export async function installAiModel(modelId: AiModelId): Promise<AiStatus> {
   if (!isTauri()) {
     throw new Error("Локальный ИИ доступен только в приложении для Android и ПК.");
   }
+  if (isBackgroundDownloadSupported()) {
+    window.FinaccAiDownloader!.startDownload(modelId);
+    return getAiStatus();
+  }
   return invoke<AiStatus>("ai_install_model", { modelId });
 }
 
 export async function cancelAiInstall(): Promise<void> {
   if (!isTauri()) return;
-  await invoke("ai_cancel_install");
+  if (isBackgroundDownloadSupported()) {
+    try {
+      window.FinaccAiDownloader!.cancelDownload();
+    } catch {
+      // Fall through to Rust flag reset
+    }
+  }
+  await invoke("ai_cancel_install").catch(() => {});
 }
 
 export async function deleteAiModel(modelId: AiModelId): Promise<AiStatus> {
@@ -148,6 +276,7 @@ export async function subscribeAiDownload(handlers: {
   onProgress?: (payload: AiDownloadProgress) => void;
   onDone?: (payload: { modelId: AiModelId }) => void;
   onError?: (payload: { modelId: AiModelId; error: string }) => void;
+  onCanceled?: (payload: { modelId: AiModelId | null }) => void;
 }): Promise<() => void> {
   if (!isTauri()) return () => {};
 
@@ -175,8 +304,41 @@ export async function subscribeAiDownload(handlers: {
     );
   }
 
+  const bgListener = (raw: AiBgStateSnapshot) => {
+    if (!raw || typeof raw !== "object") return;
+    const modelId = normalizeModelId(raw.modelId);
+    if (raw.status === "downloading" && modelId) {
+      handlers.onProgress?.({
+        modelId,
+        stage: normalizeStage(raw.stage),
+        downloadedBytes: Number(raw.downloadedBytes) || 0,
+        totalBytes: Number(raw.totalBytes) || 0,
+        percent: Number(raw.percent) || 0,
+      });
+    } else if (raw.status === "done" && modelId) {
+      handlers.onDone?.({ modelId });
+    } else if (raw.status === "error" && modelId) {
+      handlers.onError?.({
+        modelId,
+        error: raw.error || "Сбой фоновой загрузки модели.",
+      });
+    } else if (raw.status === "canceled") {
+      handlers.onCanceled?.({ modelId });
+    }
+  };
+  const prevHandler = window.__finaccAiBgEvent;
+  window.__finaccAiBgEvent = (snapshot) => {
+    prevHandler?.(snapshot);
+    bgListener(snapshot);
+  };
+
   return () => {
     for (const unlisten of unlisteners) unlisten();
+    if (window.__finaccAiBgEvent && !prevHandler) {
+      delete window.__finaccAiBgEvent;
+    } else {
+      window.__finaccAiBgEvent = prevHandler;
+    }
   };
 }
 

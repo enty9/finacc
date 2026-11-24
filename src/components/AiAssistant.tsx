@@ -31,6 +31,8 @@ const downloadStageLabel = (stage: AiDownloadProgress["stage"]): string => {
       return "Подготовка токенизатора...";
     case "verifying":
       return "Проверка целостности GGUF...";
+    case "waiting":
+      return "Ожидание сети (продолжится автоматически)...";
     case "weights":
     default:
       return "Загрузка весов модели...";
@@ -95,7 +97,9 @@ export function AiInstallProgressBar({
         <span>
           {formatBytesRu(downloadedBytes)} из {formatBytesRu(totalBytes)}
         </span>
-        <span>После установки вверху появится кнопка ✨</span>
+        <span>
+          Можно свернуть приложение или погасить экран — загрузка продолжится в фоне
+        </span>
       </div>
     </div>
   );
@@ -224,8 +228,9 @@ export function AiOptInCard({
         </button>
       </div>
       <small className="ai-optin-note">
-        Кнопка ✨ в верхнем углу появится только после завершения установки. Включить
-        или удалить модель можно в любой момент в Настройках.
+        Загрузка идёт в фоне с докачкой (можно свернуть приложение или погасить
+        экран). Кнопка ✨ появится после завершения установки; удалить или
+        отключить модель можно в Настройках.
       </small>
     </section>
   );

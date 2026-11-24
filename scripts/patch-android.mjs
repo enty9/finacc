@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = process.cwd();
@@ -9,10 +9,26 @@ if (!existsSync(androidRoot)) {
   process.exit(0);
 }
 
-const mainActivityPath = resolve(
+const androidPkgDir = resolve(
   androidRoot,
-  "app/src/main/java/app/potok/finance/MainActivity.kt",
+  "app/src/main/java/app/potok/finance",
 );
+const customKotlinDir = resolve(
+  root,
+  "src-tauri/android-src/app/potok/finance",
+);
+if (existsSync(customKotlinDir)) {
+  mkdirSync(androidPkgDir, { recursive: true });
+  for (const entry of readdirSync(customKotlinDir)) {
+    if (!entry.endsWith(".kt")) continue;
+    copyFileSync(
+      resolve(customKotlinDir, entry),
+      resolve(androidPkgDir, entry),
+    );
+  }
+}
+
+const mainActivityPath = resolve(androidPkgDir, "MainActivity.kt");
 if (existsSync(mainActivityPath)) {
   let kt = readFileSync(mainActivityPath, "utf8");
   if (!kt.includes("import android.graphics.Color")) {
@@ -39,10 +55,27 @@ if (existsSync(mainActivityPath)) {
       `    enableEdgeToEdge(\n      statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),\n      navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),\n    )`,
     );
   }
+  if (!kt.includes("private var attachedWebView: WebView? = null")) {
+    kt = kt.replace(
+      "class MainActivity : TauriActivity() {\n",
+      "class MainActivity : TauriActivity() {\n  private var attachedWebView: WebView? = null\n\n",
+    );
+  }
   if (!kt.includes("override fun onWebViewCreate")) {
     kt = kt.replace(
       /\n\}\s*$/,
-      `\n\n  override fun onWebViewCreate(webView: WebView) {\n    super.onWebViewCreate(webView)\n    webView.settings.setSupportZoom(false)\n    webView.settings.builtInZoomControls = false\n    webView.settings.displayZoomControls = false\n  }\n}\n`,
+      `\n\n  override fun onWebViewCreate(webView: WebView) {\n    super.onWebViewCreate(webView)\n    attachedWebView = webView\n    webView.settings.setSupportZoom(false)\n    webView.settings.builtInZoomControls = false\n    webView.settings.displayZoomControls = false\n    webView.addJavascriptInterface(AiDownloadBridge(this, webView), "FinaccAiDownloader")\n    AiDownloadEngine.attachWebView(webView)\n  }\n}\n`,
+    );
+  } else if (!kt.includes("FinaccAiDownloader")) {
+    kt = kt.replace(
+      "    webView.settings.displayZoomControls = false",
+      `    attachedWebView = webView\n    webView.settings.displayZoomControls = false\n    webView.addJavascriptInterface(AiDownloadBridge(this, webView), "FinaccAiDownloader")\n    AiDownloadEngine.attachWebView(webView)`,
+    );
+  }
+  if (!kt.includes("override fun onResume()")) {
+    kt = kt.replace(
+      /\n\}\s*$/,
+      `\n\n  override fun onResume() {\n    super.onResume()\n    AiDownloadEngine.promotePendingDownload(this)\n    AiDownloadEngine.pushCurrentStateToWebView(this)\n  }\n\n  override fun onDestroy() {\n    AiDownloadEngine.detachWebView(attachedWebView)\n    attachedWebView = null\n    super.onDestroy()\n  }\n}\n`,
     );
   }
   writeFileSync(mainActivityPath, kt);
@@ -82,13 +115,35 @@ if (existsSync(manifestPath)) {
       '<application\n        android:largeHeap="true"\n',
     );
   }
+  const requiredPermissions = [
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+    "android.permission.POST_NOTIFICATIONS",
+    "android.permission.WAKE_LOCK",
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.RECEIVE_BOOT_COMPLETED",
+  ];
+  for (const perm of requiredPermissions) {
+    if (!manifest.includes(perm)) {
+      manifest = manifest.replace(
+        '<uses-permission android:name="android.permission.INTERNET" />',
+        `<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="${perm}" />`,
+      );
+    }
+  }
   if (!manifest.includes("android.permission.CAMERA")) {
     manifest = manifest.replace(
       '<uses-permission android:name="android.permission.INTERNET" />',
       '<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />',
     );
   }
+  if (!manifest.includes('android:name=".AiDownloadService"')) {
+    manifest = manifest.replace(
+      "    </application>",
+      `        <service\n            android:name=".AiDownloadService"\n            android:exported="false"\n            android:foregroundServiceType="dataSync" />\n        <service\n            android:name=".AiDownloadResumeJobService"\n            android:permission="android.permission.BIND_JOB_SERVICE"\n            android:exported="false" />\n        <receiver\n            android:name=".AiDownloadCancelReceiver"\n            android:exported="false" />\n    </application>`,
+    );
+  }
   writeFileSync(manifestPath, manifest);
 }
 
-console.log("Android-конфигурация обновлена (edge-to-edge, windowBackground, manifest).");
+console.log("Android-конфигурация обновлена (edge-to-edge, windowBackground, manifest, background AI).");

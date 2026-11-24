@@ -108,6 +108,8 @@ import {
   cancelAiInstall,
   deleteAiModel,
   getAiStatus,
+  getBackgroundDownloadProgress,
+  getBackgroundDownloadState,
   installAiModel,
   loadAiHistory,
   saveAiHistory,
@@ -245,6 +247,8 @@ export default function App() {
   const pageRef = useRef<Page>("overview");
   const aiOpenRef = useRef(false);
   const aiRequestIdRef = useRef<string | null>(null);
+  const aiDownloadingRef = useRef<AiModelId | null>(null);
+  const aiNotifiedDoneRef = useRef<AiModelId | null>(null);
   const suppressNextPopRef = useRef(false);
   const initFlagsDoneRef = useRef(false);
 
@@ -412,41 +416,102 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([getAiStatus(), loadAiHistory()])
-      .then(([status, history]) => {
+
+    const notifyInstalledOnce = (modelId: AiModelId) => {
+      if (aiNotifiedDoneRef.current === modelId) return;
+      aiNotifiedDoneRef.current = modelId;
+      setToast({
+        text: "Локальный ИИ установлен — кнопка ✨ появилась в верхнем углу.",
+        error: false,
+      });
+    };
+
+    const syncAiState = async () => {
+      try {
+        const status = await getAiStatus();
         if (!active) return;
         setAiStatus(status);
-        setAiMessages(history);
+        const bgProg = getBackgroundDownloadProgress();
+        setAiProgress(bgProg);
+
+        if (status.downloadingModelId) {
+          aiDownloadingRef.current = status.downloadingModelId;
+          return;
+        }
+
+        const bgState = getBackgroundDownloadState();
+        if (bgState?.status === "done" && bgState.modelId) {
+          if (aiDownloadingRef.current === bgState.modelId) {
+            notifyInstalledOnce(bgState.modelId);
+          }
+          aiDownloadingRef.current = null;
+        } else if (bgState?.status === "canceled") {
+          aiDownloadingRef.current = null;
+        }
+      } catch {
+        /* Non-blocking AI status probe */
+      }
+    };
+
+    void Promise.all([syncAiState(), loadAiHistory()])
+      .then(([, history]) => {
+        if (active) setAiMessages(history);
       })
       .catch(() => {
-        /* Non-blocking AI status probe */
+        /* Non-blocking AI history load */
       });
+
+    const onResumeSync = () => {
+      if (document.visibilityState === "visible") {
+        void syncAiState();
+      }
+    };
+    const onFocusSync = () => {
+      void syncAiState();
+    };
+    document.addEventListener("visibilitychange", onResumeSync);
+    window.addEventListener("focus", onFocusSync);
 
     let cleanupDownload: (() => void) | undefined;
     let cleanupChat: (() => void) | undefined;
 
     void subscribeAiDownload({
       onProgress: (payload) => {
-        if (active) setAiProgress(payload);
-      },
-      onDone: () => {
         if (!active) return;
+        aiDownloadingRef.current = payload.modelId;
+        setAiProgress(payload);
+        setAiStatus((prev) =>
+          prev && prev.downloadingModelId !== payload.modelId
+            ? { ...prev, downloadingModelId: payload.modelId }
+            : prev,
+        );
+      },
+      onDone: (payload) => {
+        if (!active) return;
+        aiDownloadingRef.current = null;
         setAiProgress(null);
         void getAiStatus().then((status) => {
           if (active) setAiStatus(status);
         });
-        setToast({
-          text: "Локальный ИИ установлен — кнопка ✨ появилась в верхнем углу.",
-          error: false,
-        });
+        notifyInstalledOnce(payload.modelId);
       },
       onError: (payload) => {
         if (!active) return;
+        aiDownloadingRef.current = null;
         setAiProgress(null);
         void getAiStatus().then((status) => {
           if (active) setAiStatus(status);
         });
         setToast({ text: payload.error, error: true });
+      },
+      onCanceled: () => {
+        if (!active) return;
+        aiDownloadingRef.current = null;
+        setAiProgress(null);
+        void getAiStatus().then((status) => {
+          if (active) setAiStatus(status);
+        });
+        setToast({ text: "Загрузка модели ИИ отменена.", error: false });
       },
     }).then((unlisten) => {
       if (active) cleanupDownload = unlisten;
@@ -465,6 +530,8 @@ export default function App() {
 
     return () => {
       active = false;
+      document.removeEventListener("visibilitychange", onResumeSync);
+      window.removeEventListener("focus", onFocusSync);
       cleanupDownload?.();
       cleanupChat?.();
     };
@@ -494,11 +561,14 @@ export default function App() {
 
   const handleInstallAi = useCallback(
     async (modelId: AiModelId) => {
+      aiNotifiedDoneRef.current = null;
+      aiDownloadingRef.current = modelId;
       await commitAiPrefs({ choice: "enabled", modelId });
       const nextStatus = await installAiModel(modelId);
       setAiStatus(nextStatus);
+      setAiProgress(getBackgroundDownloadProgress());
       setToast({
-        text: "Загружаем локальную модель ИИ…",
+        text: "Загрузка модели запущена в фоне — можно свернуть приложение.",
         error: false,
       });
     },
@@ -506,6 +576,7 @@ export default function App() {
   );
 
   const handleCancelAiInstall = useCallback(async () => {
+    aiDownloadingRef.current = null;
     await cancelAiInstall();
     setAiProgress(null);
     const nextStatus = await getAiStatus();
@@ -514,6 +585,9 @@ export default function App() {
 
   const handleDeleteAiModel = useCallback(
     async (modelId: AiModelId) => {
+      if (aiNotifiedDoneRef.current === modelId) {
+        aiNotifiedDoneRef.current = null;
+      }
       const nextStatus = await deleteAiModel(modelId);
       setAiStatus(nextStatus);
       if (dataRef.current?.preferences.ai.modelId === modelId) {

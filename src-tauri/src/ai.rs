@@ -294,6 +294,12 @@ fn build_status(app: &AppHandle, state: &AiState) -> Result<AiStatusResponse, St
     })
 }
 
+fn parse_content_range_total(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let raw = headers.get(reqwest::header::CONTENT_RANGE)?.to_str().ok()?;
+    let (_, total_str) = raw.rsplit_once('/')?;
+    total_str.trim().parse::<u64>().ok().filter(|&v| v > 0)
+}
+
 async fn stream_file(
     client: &reqwest::Client,
     url: &str,
@@ -304,87 +310,134 @@ async fn stream_file(
     stage: &'static str,
     fallback_total: u64,
     emit_progress: bool,
+    allow_resume: bool,
 ) -> Result<(), String> {
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Ошибка сети при скачивании: {e}"))?;
+    for attempt in 0..2 {
+        let existing_offset = if allow_resume {
+            tokio::fs::metadata(part_path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
-    if !response.status().is_success() {
-        return Err(format!(
-            "Сервер моделей вернул HTTP {} при загрузке.",
-            response.status().as_u16()
-        ));
-    }
+        let mut req = client
+            .get(url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity");
+        if existing_offset > 0 {
+            req = req.header(reqwest::header::RANGE, format!("bytes={existing_offset}-"));
+        }
 
-    let total_bytes = response.content_length().unwrap_or(fallback_total).max(1);
-    let mut file = tokio::fs::File::create(part_path)
-        .await
-        .map_err(|e| format!("Не удалось создать файл на диске: {e}"))?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| format!("Ошибка сети при скачивании: {e}"))?;
 
-    let mut stream = response.bytes_stream();
-    let mut downloaded: u64 = 0;
-    let mut last_emit = Instant::now();
-    let mut last_percent: i32 = -1;
+        if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && attempt == 0 {
+            let _ = tokio::fs::remove_file(part_path).await;
+            continue;
+        }
 
-    if emit_progress {
-        let _ = app.emit(
-            "ai-download-progress",
-            DownloadProgressPayload {
-                model_id: model_id.to_string(),
-                stage,
-                downloaded_bytes: 0,
-                total_bytes,
-                percent: 0.0,
-            },
-        );
-    }
+        if !response.status().is_success() {
+            return Err(format!(
+                "Сервер моделей вернул HTTP {} при загрузке.",
+                response.status().as_u16()
+            ));
+        }
 
-    while let Some(chunk_res) = stream.next().await {
+        let is_partial =
+            response.status() == reqwest::StatusCode::PARTIAL_CONTENT && existing_offset > 0;
+        let total_bytes = if is_partial {
+            parse_content_range_total(response.headers())
+                .or_else(|| response.content_length().map(|len| existing_offset + len))
+                .unwrap_or(fallback_total)
+                .max(1)
+        } else {
+            response.content_length().unwrap_or(fallback_total).max(1)
+        };
+
+        let mut file = if is_partial {
+            tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(part_path)
+                .await
+                .map_err(|e| format!("Не удалось открыть файл для докачки: {e}"))?
+        } else {
+            tokio::fs::File::create(part_path)
+                .await
+                .map_err(|e| format!("Не удалось создать файл на диске: {e}"))?
+        };
+
+        let mut stream = response.bytes_stream();
+        let mut downloaded: u64 = if is_partial { existing_offset } else { 0 };
+        let mut last_emit = Instant::now();
+        let mut last_percent: i32 = -1;
+
+        if emit_progress {
+            let init_percent =
+                ((downloaded as f64 / total_bytes as f64) * 100.0).clamp(0.0, 99.5) as f32;
+            let _ = app.emit(
+                "ai-download-progress",
+                DownloadProgressPayload {
+                    model_id: model_id.to_string(),
+                    stage,
+                    downloaded_bytes: downloaded,
+                    total_bytes,
+                    percent: init_percent,
+                },
+            );
+        }
+
+        while let Some(chunk_res) = stream.next().await {
+            if cancel.load(Ordering::SeqCst) {
+                drop(file);
+                let _ = tokio::fs::remove_file(part_path).await;
+                return Err("Загрузка отменена пользователем.".to_string());
+            }
+
+            let chunk = chunk_res.map_err(|e| format!("Сбой передачи данных: {e}"))?;
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("Недостаточно места или ошибка записи на диск: {e}"))?;
+            downloaded = downloaded.saturating_add(chunk.len() as u64);
+
+            if emit_progress {
+                let percent =
+                    ((downloaded as f64 / total_bytes as f64) * 100.0).clamp(0.0, 99.5) as f32;
+                let whole = percent as i32;
+                if whole != last_percent || last_emit.elapsed().as_millis() >= 160 {
+                    last_percent = whole;
+                    last_emit = Instant::now();
+                    let _ = app.emit(
+                        "ai-download-progress",
+                        DownloadProgressPayload {
+                            model_id: model_id.to_string(),
+                            stage,
+                            downloaded_bytes: downloaded,
+                            total_bytes,
+                            percent,
+                        },
+                    );
+                }
+            }
+        }
+
+        file.flush()
+            .await
+            .map_err(|e| format!("Ошибка сброса буфера файла: {e}"))?;
+        drop(file);
+
         if cancel.load(Ordering::SeqCst) {
-            drop(file);
             let _ = tokio::fs::remove_file(part_path).await;
             return Err("Загрузка отменена пользователем.".to_string());
         }
 
-        let chunk = chunk_res.map_err(|e| format!("Сбой передачи данных: {e}"))?;
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| format!("Недостаточно места или ошибка записи на диск: {e}"))?;
-        downloaded = downloaded.saturating_add(chunk.len() as u64);
-
-        if emit_progress {
-            let percent = ((downloaded as f64 / total_bytes as f64) * 100.0).clamp(0.0, 99.5) as f32;
-            let whole = percent as i32;
-            if whole != last_percent || last_emit.elapsed().as_millis() >= 160 {
-                last_percent = whole;
-                last_emit = Instant::now();
-                let _ = app.emit(
-                    "ai-download-progress",
-                    DownloadProgressPayload {
-                        model_id: model_id.to_string(),
-                        stage,
-                        downloaded_bytes: downloaded,
-                        total_bytes,
-                        percent,
-                    },
-                );
-            }
-        }
+        return Ok(());
     }
 
-    file.flush()
-        .await
-        .map_err(|e| format!("Ошибка сброса буфера файла: {e}"))?;
-    drop(file);
-
-    if cancel.load(Ordering::SeqCst) {
-        let _ = tokio::fs::remove_file(part_path).await;
-        return Err("Загрузка отменена пользователем.".to_string());
-    }
-
-    Ok(())
+    Err("Не удалось согласовать диапазон докачки с сервером.".to_string())
 }
 
 async fn run_model_download(
@@ -401,7 +454,6 @@ async fn run_model_download(
     let tokenizer_part = dir.join("tokenizer.json.part");
     let weights_part = dir.join("weights.gguf.part");
     let _ = tokio::fs::remove_file(&tokenizer_part).await;
-    let _ = tokio::fs::remove_file(&weights_part).await;
 
     let client = reqwest::Client::builder()
         .user_agent("finacc/0.2.0")
@@ -409,43 +461,55 @@ async fn run_model_download(
         .build()
         .map_err(|e| format!("Не удалось инициализировать HTTP-клиент: {e}"))?;
 
-    let _ = app.emit(
-        "ai-download-progress",
-        DownloadProgressPayload {
-            model_id: spec.id.to_string(),
-            stage: "tokenizer",
-            downloaded_bytes: 0,
-            total_bytes: spec.approx_bytes,
-            percent: 0.0,
-        },
-    );
-
-    if let Err(err) = stream_file(
-        &client,
-        spec.tokenizer_url,
-        &tokenizer_part,
-        &cancel,
-        &app,
-        spec.id,
-        "tokenizer",
-        10_000_000,
-        false,
-    )
-    .await
-    {
-        let _ = tokio::fs::remove_file(&tokenizer_part).await;
-        return Err(err);
-    }
-
-    let tok_meta = tokio::fs::metadata(&tokenizer_part)
+    let tokenizer_ready = tokio::fs::metadata(&tokenizer_path)
         .await
-        .map_err(|e| format!("Не найден временный файл токенизатора: {e}"))?;
-    if tok_meta.len() < 50_000 {
-        let _ = tokio::fs::remove_file(&tokenizer_part).await;
-        return Err("Скачанный токенизатор повреждён или неполный.".to_string());
+        .map(|m| m.len() >= 50_000)
+        .unwrap_or(false);
+
+    if !tokenizer_ready {
+        let _ = app.emit(
+            "ai-download-progress",
+            DownloadProgressPayload {
+                model_id: spec.id.to_string(),
+                stage: "tokenizer",
+                downloaded_bytes: 0,
+                total_bytes: spec.approx_bytes,
+                percent: 0.0,
+            },
+        );
+
+        if let Err(err) = stream_file(
+            &client,
+            spec.tokenizer_url,
+            &tokenizer_part,
+            &cancel,
+            &app,
+            spec.id,
+            "tokenizer",
+            10_000_000,
+            false,
+            false,
+        )
+        .await
+        {
+            let _ = tokio::fs::remove_file(&tokenizer_part).await;
+            return Err(err);
+        }
+
+        let tok_meta = tokio::fs::metadata(&tokenizer_part)
+            .await
+            .map_err(|e| format!("Не найден временный файл токенизатора: {e}"))?;
+        if tok_meta.len() < 50_000 {
+            let _ = tokio::fs::remove_file(&tokenizer_part).await;
+            return Err("Скачанный токенизатор повреждён или неполный.".to_string());
+        }
+
+        tokio::fs::rename(&tokenizer_part, &tokenizer_path)
+            .await
+            .map_err(|e| format!("Не удалось сохранить tokenizer.json: {e}"))?;
     }
 
-    if let Err(err) = stream_file(
+    stream_file(
         &client,
         spec.weights_url,
         &weights_part,
@@ -455,13 +519,9 @@ async fn run_model_download(
         "weights",
         spec.approx_bytes,
         true,
+        true,
     )
-    .await
-    {
-        let _ = tokio::fs::remove_file(&tokenizer_part).await;
-        let _ = tokio::fs::remove_file(&weights_part).await;
-        return Err(err);
-    }
+    .await?;
 
     let _ = app.emit(
         "ai-download-progress",
@@ -478,7 +538,6 @@ async fn run_model_download(
         .await
         .map_err(|e| format!("Не найден временный файл весов модели: {e}"))?;
     if weights_meta.len() < 100_000_000 {
-        let _ = tokio::fs::remove_file(&tokenizer_part).await;
         let _ = tokio::fs::remove_file(&weights_part).await;
         return Err("Файл весов модели скачался не полностью.".to_string());
     }
@@ -490,14 +549,10 @@ async fn run_model_download(
         f.read_exact(&mut header).is_ok() && &header == b"GGUF"
     };
     if !header_ok {
-        let _ = tokio::fs::remove_file(&tokenizer_part).await;
         let _ = tokio::fs::remove_file(&weights_part).await;
         return Err("Скачанный файл не является корректной моделью GGUF.".to_string());
     }
 
-    tokio::fs::rename(&tokenizer_part, &tokenizer_path)
-        .await
-        .map_err(|e| format!("Не удалось сохранить tokenizer.json: {e}"))?;
     tokio::fs::rename(&weights_part, &weights_path)
         .await
         .map_err(|e| format!("Не удалось сохранить weights.gguf: {e}"))?;
