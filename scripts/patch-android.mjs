@@ -76,6 +76,12 @@ if (existsSync(manifestPath)) {
       '<application\n        android:allowBackup="false"\n',
     );
   }
+  if (!manifest.includes("android:largeHeap=")) {
+    manifest = manifest.replace(
+      "<application\n",
+      '<application\n        android:largeHeap="true"\n',
+    );
+  }
   if (!manifest.includes("android.permission.CAMERA")) {
     manifest = manifest.replace(
       '<uses-permission android:name="android.permission.INTERNET" />',

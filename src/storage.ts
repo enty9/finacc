@@ -9,7 +9,7 @@ const upsert =
   "INSERT INTO app_state (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
 const removeSql = "DELETE FROM app_state WHERE key = $1";
 
-export type Key = "finances" | "usd-rate" | "rates" | "app-lock";
+export type Key = "finances" | "usd-rate" | "rates" | "app-lock" | "ai-chat";
 
 let nativeDb: Promise<NativeDatabase> | undefined;
 let browserDb: Promise<IDBDatabase> | undefined;

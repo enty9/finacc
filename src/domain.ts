@@ -112,6 +112,16 @@ export interface InsightThresholds {
   largeMinAmount: number;
 }
 
+export type AiChoice = "undecided" | "enabled" | "disabled";
+
+export type AiModelId = "qwen2.5-3b" | "qwen2.5-1.5b";
+
+export interface AiPreferences {
+  choice: AiChoice;
+  modelId: AiModelId;
+  includeContext: boolean;
+}
+
 export interface Preferences {
   theme: ThemeMode;
   secondaryCurrency: SecondaryCurrency;
@@ -119,6 +129,7 @@ export interface Preferences {
   hideBalancesOnStart: boolean;
   insightThresholds: InsightThresholds;
   dismissedInsights: string[];
+  ai: AiPreferences;
 }
 
 export interface Data {
@@ -1130,6 +1141,11 @@ export function defaultPreferences(): Preferences {
       largeMinAmount: 1_000_000,
     },
     dismissedInsights: [],
+    ai: {
+      choice: "undecided",
+      modelId: "qwen2.5-3b",
+      includeContext: true,
+    },
   };
 }
 
@@ -1560,6 +1576,25 @@ export function decodeData(value: unknown): Data {
         ? (p.dismissedInsights as string[])
         : [];
 
+    const rawAi =
+      p.ai && typeof p.ai === "object"
+        ? (p.ai as Record<string, unknown>)
+        : null;
+    const aiChoice: AiChoice =
+      rawAi?.choice === "enabled" ||
+      rawAi?.choice === "disabled" ||
+      rawAi?.choice === "undecided"
+        ? rawAi.choice
+        : "undecided";
+    const aiModelId: AiModelId =
+      rawAi?.modelId === "qwen2.5-3b" || rawAi?.modelId === "qwen2.5-1.5b"
+        ? rawAi.modelId
+        : "qwen2.5-3b";
+    const aiIncludeContext =
+      typeof rawAi?.includeContext === "boolean"
+        ? rawAi.includeContext
+        : true;
+
     preferences = {
       theme,
       secondaryCurrency,
@@ -1567,6 +1602,11 @@ export function decodeData(value: unknown): Data {
       hideBalancesOnStart,
       insightThresholds,
       dismissedInsights,
+      ai: {
+        choice: aiChoice,
+        modelId: aiModelId,
+        includeContext: aiIncludeContext,
+      },
     };
   }
 
